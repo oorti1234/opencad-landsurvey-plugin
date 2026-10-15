@@ -26,6 +26,24 @@ pub fn stitch_segments(
     segments: &[ContourSegment],
     tolerance: f64,
 ) -> Result<Vec<ContourChain>, String> {
+    stitch_impl(segments, tolerance, false)
+}
+
+/// Preserve every nondegenerate segment, stopping chains at junctions with
+/// more than two neighbors. Never chooses a pairing across ambiguous vertices.
+/// Callers may render resulting open chains as independent geometry.
+pub fn stitch_segments_split_junctions(
+    segments: &[ContourSegment],
+    tolerance: f64,
+) -> Result<Vec<ContourChain>, String> {
+    stitch_impl(segments, tolerance, true)
+}
+
+fn stitch_impl(
+    segments: &[ContourSegment],
+    tolerance: f64,
+    split_junctions: bool,
+) -> Result<Vec<ContourChain>, String> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
         return Err("tolerance must be finite and positive".into());
     }
@@ -55,7 +73,7 @@ pub fn stitch_segments(
             adj.entry(a).or_default().push((id,b));
             adj.entry(b).or_default().push((id,a));
         }
-        if let Some((node, neighbors)) = adj.iter().find(|(_, neighbors)| neighbors.len() > 2) {
+        if let Some((node, neighbors)) = adj.iter().find(|(_, neighbors)| neighbors.len() > 2).filter(|_| !split_junctions) {
             let xy = coordinates[&(lev, *node)];
             return Err(format!(
                 "ambiguous contour junction (degree {}) at elevation {:.6}, X {:.6}, Y {:.6}; check exact-level TIN vertices or snapping tolerance",
@@ -64,7 +82,7 @@ pub fn stitch_segments(
         }
         let mut visited = vec![false; kept.len()];
         // Open chains first, then cycles. Sorted map makes output deterministic.
-        let starts: Vec<K> = adj.iter().filter(|(_,n)|n.len()==1).map(|(k,_)|*k)
+        let starts: Vec<K> = adj.iter().filter(|(_,n)|n.len()!=2).map(|(k,_)|*k)
             .chain(adj.keys().copied()).collect();
         for start in starts {
             if !adj[&start].iter().any(|(id,_)| !visited[*id]) { continue; }
@@ -77,7 +95,7 @@ pub fn stitch_segments(
                 visited[id]=true;
                 path.push(other);
                 curr=other;
-                if curr==start {break}
+                if curr==start || (split_junctions && adj[&curr].len() != 2) {break}
             }
             let closed = path.len()>2 && path.first()==path.last();
             output.push(ContourChain {
@@ -145,6 +163,20 @@ mod tests {
         assert!(err.contains("degree 3"));
         assert!(err.contains("elevation 5.000000"));
         assert!(err.contains("X 0.000000"));
+    }
+    #[test]
+    fn splits_degree_four_without_connecting_unrelated_branches() {
+        let segs = [
+            segment([-2.,0.],[-1.,0.]),
+            segment([-1.,0.],[0.,0.]),
+            segment([0.,0.],[1.,0.]),
+            segment([0.,0.],[0.,1.]),
+            segment([0.,0.],[0.,-1.]),
+        ];
+        let chains = stitch_segments_split_junctions(&segs,1e-8).unwrap();
+        assert_eq!(chains.len(),4);
+        assert_eq!(chains.iter().map(|c|c.vertices.len()-1).sum::<usize>(),5);
+        assert!(chains.iter().all(|c|!c.closed));
     }
     #[test]
     fn rejects_invalid_tolerance(){
