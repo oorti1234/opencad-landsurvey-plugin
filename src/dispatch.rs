@@ -775,6 +775,39 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         host.push_info("LS_CONTOURS: no contours at the specified interval.");
         return;
     }
+    // Audit the raw isoline graph independently of the split-chain drawing
+    // strategy. This is read-only: it does not change the geometry or TIN.
+    let mut junctions = Vec::new();
+    let mut next_level = ((surface.nodes.iter().map(|p| p[2])
+        .fold(f64::INFINITY, f64::min) / minor).ceil() as i64);
+    let max_level = (surface.nodes.iter().map(|p| p[2])
+        .fold(f64::NEG_INFINITY, f64::max) / minor).floor() as i64;
+    while next_level <= max_level {
+        let level = next_level as f64 * minor;
+        let segments = landsurvey::contours::segments_at_level(&surface, level);
+        match landsurvey::contour_topology::ambiguous_junctions(&segments, 1e-6) {
+            Ok(found) => junctions.extend(found),
+            Err(error) => {
+                host.push_info(&format!("LS_CONTOURS topology audit unavailable at {level:.3}: {error}"));
+                break;
+            }
+        }
+        next_level += 1;
+    }
+    let open_count = chains.iter().filter(|c| !c.chain.closed).count();
+    host.push_output(&format!(
+        "LS_CONTOURS topology: {} ambiguous junction(s), {} open chain(s), {} closed chain(s).",
+        junctions.len(), open_count, chains.len()-open_count
+    ));
+    for j in junctions.iter().take(8) {
+        host.push_output(&format!(
+            "  Junction degree {} at Z {:.3}, X {:.3}, Y {:.3}",
+            j.degree, j.elevation, j.xy[0], j.xy[1]
+        ));
+    }
+    if junctions.len() > 8 {
+        host.push_output(&format!("  ... {} additional junction(s) not listed.", junctions.len()-8));
+    }
     // Only replace contour geometry previously generated for this surface.
     // Restrict by entity type and layer as well as XDATA to avoid touching
     // original TIN edges, volume geometry or manually drawn entities.
