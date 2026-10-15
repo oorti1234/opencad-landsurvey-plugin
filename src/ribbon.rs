@@ -171,7 +171,7 @@ impl CadModule for LandSurveyModule {
                     RibbonItem::LargeTool(ToolDef {
                         id: "LS_CONTOURS",
                         label: "Contours (Beta)",
-                        icon: IconKind::Glyph("\\u{224B}"),
+                        icon: IconKind::Glyph("≈"),
                         event: ModuleEvent::Command("LS_CONTOURS".to_string()),
                     }),
                     // Clicking prints usage; the user then types
