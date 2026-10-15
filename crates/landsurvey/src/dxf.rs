@@ -170,10 +170,10 @@ mod tests {
         d.add_layer("CONTOURS_MAJOR", 2);
         d.polyline3d("CONTOURS_MAJOR", &[[100.,200.,2.5],[110.,200.,2.5],[110.,210.,2.5]], true);
         let text = d.build();
-        assert!(text.contains("0\\nPOLYLINE\\n8\\nCONTOURS_MAJOR\\n66\\n1\\n70\\n9\\n"));
-        assert_eq!(text.matches("0\\nVERTEX\\n").count(), 3);
-        assert!(text.contains("30\\n2.500000\\n"));
-        assert!(text.contains("0\\nSEQEND\\n"));
+        assert!(text.contains("0\nPOLYLINE\n8\nCONTOURS_MAJOR\n66\n1\n70\n9\n"));
+        assert_eq!(text.matches("0\nVERTEX\n").count(), 3);
+        assert!(text.contains("30\n2.500000\n"));
+        assert!(text.contains("0\nSEQEND\n"));
     }
 
     #[test]
