@@ -6,6 +6,7 @@
 //! which wraps these functions in ribbon/command/XDATA glue.
 
 pub mod cogo;
+pub mod contours;
 pub mod dxf;
 pub mod landxml;
 pub mod plan;
