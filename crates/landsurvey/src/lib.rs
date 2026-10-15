@@ -7,6 +7,7 @@
 
 pub mod cogo;
 pub mod contours;
+pub mod contour_chains;
 pub mod dxf;
 pub mod landxml;
 pub mod plan;
