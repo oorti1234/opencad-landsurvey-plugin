@@ -723,9 +723,30 @@ fn write_anim_file(host: &mut dyn HostApi, op: &str, svg: &str) {
 /// triangulation as `Line` entities on layer `LS-TIN-<NAME>` (tagged with
 /// `LANDSURVEY_SURFACE` XDATA). Reports point/triangle counts and plan area.
 /// Wired to the ribbon via a native file picker.
-/// Experimental contours command. Draws non-destructive 3D line segments;
-/// 3D CAD polylines and interactive dialog will follow separately.
+/// Experimental contours command draws 3D CAD polylines and major elevation labels.
 /// Usage: LS_CONTOURS <surface-name> [minor-interval] [major-every]
+/// Return midpoint by 2D arc length; avoids labels clustered at short segments.
+fn contour_label_position(vertices: &[[f64; 2]], min_length: f64) -> Option<[f64; 2]> {
+    if vertices.len() < 2 { return None; }
+    let lengths: Vec<f64> = vertices.windows(2).map(|p| {
+        (p[1][0]-p[0][0]).hypot(p[1][1]-p[0][1])
+    }).collect();
+    let total: f64 = lengths.iter().sum();
+    if !total.is_finite() || total < min_length || total <= 0.0 { return None; }
+    let mut distance = total / 2.0;
+    for (i, segment) in lengths.iter().enumerate() {
+        if distance <= *segment && *segment > 0.0 {
+            let t = distance / segment;
+            return Some([
+                vertices[i][0] + t * (vertices[i+1][0]-vertices[i][0]),
+                vertices[i][1] + t * (vertices[i+1][1]-vertices[i][1]),
+            ]);
+        }
+        distance -= segment;
+    }
+    None
+}
+
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
     let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
     if args.is_empty() || args.len() > 3 {
@@ -756,6 +777,10 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
     }
     let mut batch = Batch::new();
     let mut total_vertices = 0usize;
+    let (min_x, max_x, min_y, max_y) = surface.extent();
+    let span = (max_x - min_x).max(max_y - min_y);
+    let label_height = (span / 200.0).clamp(0.2, 5.0);
+    let mut label_count = 0usize;
     for classified in &chains {
         let layer = if classified.major { "LS-CONTOUR-MAJOR" } else { "LS-CONTOUR-MINOR" };
         let c = &classified.chain;
@@ -771,14 +796,29 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         // properties have not yet been configured by the host.
         entity.common_mut().color = Color::from_index(if classified.major { 2 } else { 8 });
         batch.add_tagged(entity, layer, surface_record(args[0], "CONTOUR"));
+        // Label long major contours once, without adding vertices or
+        // modifying the underlying 3D polyline.
+        if classified.major {
+            if let Some(xy) = contour_label_position(&c.vertices, label_height * 12.0) {
+                let mut label = EntityType::Text(
+                    Text::with_value(
+                        format!("{:.2}", c.elevation),
+                        Vector3::new(xy[0], xy[1], c.elevation),
+                    ).with_height(label_height)
+                );
+                label.common_mut().color = Color::from_index(2);
+                batch.add_tagged(label, "LS-CONTOUR-LABEL", surface_record(args[0], "CONTOUR_LABEL"));
+                label_count += 1;
+            }
+        }
     }
     host.push_undo("LS_CONTOURS");
     let drawn = batch.commit(host);
     host.bump_geometry();
     host.set_dirty();
     host.push_output(&format!(
-        "LS_CONTOURS: {} chains, {} vertices, {} 3D polylines on major/minor layers.",
-        chains.len(), total_vertices, drawn
+        "LS_CONTOURS: {} chains, {} vertices, {} major labels, {} total CAD entities.",
+        chains.len(), total_vertices, label_count, drawn
     ));
 }
 
