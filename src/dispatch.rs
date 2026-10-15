@@ -76,7 +76,7 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
                 "Land Survey plugin ready. Points: LS_PNEZD, LS_RAW, LS_LIST, LS_AUTOLABEL. \
                  Field-to-finish: LS_FINISH, LS_LIBRARY. \
                  Import / export: LS_IMPORTPLAN, LS_LANDXML, LS_LANDXMLOUT. \
-                 Surfaces: LS_SURFACE, LS_VOLUME, LS_DATUM. \
+                 Surfaces: LS_SURFACE, LS_CONTOURS, LS_VOLUME, LS_DATUM. \
                  COGO / transforms: LS_INVERSE, LS_RTS, LS_HELMERT, LS_RESECT. \
                  Labels: LS_LABELSTYLE. \
                  See PLUGIN.md for usage.",
@@ -105,6 +105,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
         }
         "LS_LABELSTYLE" => {
             label_style_cmd(host, cmd);
+            true
+        }
+        "LS_CONTOURS" => {
+            contours_command(host, cmd);
             true
         }
         "LS_VOLUME" => {
@@ -719,6 +723,57 @@ fn write_anim_file(host: &mut dyn HostApi, op: &str, svg: &str) {
 /// triangulation as `Line` entities on layer `LS-TIN-<NAME>` (tagged with
 /// `LANDSURVEY_SURFACE` XDATA). Reports point/triangle counts and plan area.
 /// Wired to the ribbon via a native file picker.
+/// Experimental contours command. Draws non-destructive 3D line segments;
+/// 3D CAD polylines and interactive dialog will follow separately.
+/// Usage: LS_CONTOURS <surface-name> [minor-interval] [major-every]
+fn contours_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len() > 3 {
+        host.push_info("Usage: LS_CONTOURS <surface-name> [minor-interval=0.5] [major-every=5]");
+        return;
+    }
+    let minor = match args.get(1).unwrap_or(&"0.5").parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => v,
+        _ => { host.push_error("LS_CONTOURS: invalid minor interval"); return; }
+    };
+    let major_every = match args.get(2).unwrap_or(&"5").parse::<usize>() {
+        Ok(v) if v > 0 => v,
+        _ => { host.push_error("LS_CONTOURS: invalid major interval multiplier"); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(s) => s,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS: {e}")); return; }
+    };
+    let chains = match landsurvey::contour_levels::generate_contours(
+        &surface, minor, major_every, 0.0, 1e-6,
+    ) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS: {e}")); return; }
+    };
+    if chains.is_empty() {
+        host.push_info("LS_CONTOURS: no contours at the specified interval.");
+        return;
+    }
+    let mut batch = Batch::new();
+    let mut count = 0;
+    for classified in &chains {
+        let layer = if classified.major { "LS-CONTOUR-MAJOR" } else { "LS-CONTOUR-MINOR" };
+        let c = &classified.chain;
+        for pair in c.vertices.windows(2) {
+            let a = Vector3::new(pair[0][0], pair[0][1], c.elevation);
+            let b = Vector3::new(pair[1][0], pair[1][1], c.elevation);
+            let ent = EntityType::Line(Line::from_points(a,b));
+            batch.add_tagged(ent, layer, surface_record(args[0], "CONTOUR"));
+            count += 1;
+        }
+    }
+    host.push_undo("LS_CONTOURS");
+    let drawn = batch.commit(host);
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!("LS_CONTOURS: {} chains, {} segments ({} committed) on major/minor layers. Experimental 3D lines; polylines pending.", chains.len(), count, drawn));
+}
+
 fn build_surface(host: &mut dyn HostApi, cmd: &str) {
     let arg = first_arg(cmd);
     if arg.is_empty() {
