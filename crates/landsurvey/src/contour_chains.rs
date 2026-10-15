@@ -55,8 +55,12 @@ pub fn stitch_segments(
             adj.entry(a).or_default().push((id,b));
             adj.entry(b).or_default().push((id,a));
         }
-        if adj.values().any(|neighbors| neighbors.len()>2) {
-            return Err("ambiguous contour junction (degree > 2)".into());
+        if let Some((node, neighbors)) = adj.iter().find(|(_, neighbors)| neighbors.len() > 2) {
+            let xy = coordinates[&(lev, *node)];
+            return Err(format!(
+                "ambiguous contour junction (degree {}) at elevation {:.6}, X {:.6}, Y {:.6}; check exact-level TIN vertices or snapping tolerance",
+                neighbors.len(), f64::from_bits(lev), xy[0], xy[1]
+            ));
         }
         let mut visited = vec![false; kept.len()];
         // Open chains first, then cycles. Sorted map makes output deterministic.
@@ -130,6 +134,17 @@ mod tests {
             segment([0.,0.],[0.,1.]),
             segment([0.,0.],[-1.,0.])
         ],1e-8).is_err());
+    }
+    #[test]
+    fn branch_diagnostic_identifies_level_and_position(){
+        let err = stitch_segments(&[
+            segment([0.,0.],[1.,0.]),
+            segment([0.,0.],[0.,1.]),
+            segment([0.,0.],[-1.,0.])
+        ],1e-8).unwrap_err();
+        assert!(err.contains("degree 3"));
+        assert!(err.contains("elevation 5.000000"));
+        assert!(err.contains("X 0.000000"));
     }
     #[test]
     fn rejects_invalid_tolerance(){
