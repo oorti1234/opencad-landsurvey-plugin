@@ -755,23 +755,31 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         return;
     }
     let mut batch = Batch::new();
-    let mut count = 0;
+    let mut total_vertices = 0usize;
     for classified in &chains {
         let layer = if classified.major { "LS-CONTOUR-MAJOR" } else { "LS-CONTOUR-MINOR" };
         let c = &classified.chain;
-        for pair in c.vertices.windows(2) {
-            let a = Vector3::new(pair[0][0], pair[0][1], c.elevation);
-            let b = Vector3::new(pair[1][0], pair[1][1], c.elevation);
-            let ent = EntityType::Line(Line::from_points(a,b));
-            batch.add_tagged(ent, layer, surface_record(args[0], "CONTOUR"));
-            count += 1;
-        }
+        if c.vertices.len() < 2 { continue; }
+        let points: Vec<Vector3> = c.vertices.iter().map(|xy|
+            Vector3::new(xy[0], xy[1], c.elevation)
+        ).collect();
+        total_vertices += points.len();
+        let mut polyline = Polyline3D::from_points(points);
+        polyline.flags.closed = c.closed;
+        let mut entity = EntityType::Polyline3D(polyline);
+        // Distinguish majors visually even if the drawing's layer default
+        // properties have not yet been configured by the host.
+        entity.common_mut().color = Color::from_index(if classified.major { 2 } else { 8 });
+        batch.add_tagged(entity, layer, surface_record(args[0], "CONTOUR"));
     }
     host.push_undo("LS_CONTOURS");
     let drawn = batch.commit(host);
     host.bump_geometry();
     host.set_dirty();
-    host.push_output(&format!("LS_CONTOURS: {} chains, {} segments ({} committed) on major/minor layers. Experimental 3D lines; polylines pending.", chains.len(), count, drawn));
+    host.push_output(&format!(
+        "LS_CONTOURS: {} chains, {} vertices, {} 3D polylines on major/minor layers.",
+        chains.len(), total_vertices, drawn
+    ));
 }
 
 fn build_surface(host: &mut dyn HostApi, cmd: &str) {
