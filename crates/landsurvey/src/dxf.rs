@@ -85,21 +85,21 @@ impl DxfBuilder {
             push_xyz(&mut s, 11, *b);
         }
         for (layer, vertices, closed) in &self.polylines3d {
-            s.push_str("0\\nPOLYLINE\\n8\\n");
+            s.push_str("0\nPOLYLINE\n8\n");
             s.push_str(layer);
             // 8 = 3D polyline; 1 = closed in polygon direction.
-            s.push_str(&format!("\\n66\\n1\\n70\\n{}\\n", if *closed { 9 } else { 8 }));
+            s.push_str(&format!("\n66\n1\n70\n{}\n", if *closed { 9 } else { 8 }));
             push_xyz(&mut s, 10, [0.0, 0.0, 0.0]);
             for p in vertices {
-                s.push_str("0\\nVERTEX\\n8\\n");
+                s.push_str("0\nVERTEX\n8\n");
                 s.push_str(layer);
-                s.push('\\n');
+                s.push('\n');
                 push_xyz(&mut s, 10, *p);
-                s.push_str("70\\n32\\n");
+                s.push_str("70\n32\n");
             }
-            s.push_str("0\\nSEQEND\\n8\\n");
+            s.push_str("0\nSEQEND\n8\n");
             s.push_str(layer);
-            s.push('\\n');
+            s.push('\n');
         }
         for (layer, p) in &self.points {
             s.push_str("0\nPOINT\n8\n");
