@@ -778,8 +778,8 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
     // Audit the raw isoline graph independently of the split-chain drawing
     // strategy. This is read-only: it does not change the geometry or TIN.
     let mut junctions = Vec::new();
-    let mut next_level = ((surface.nodes.iter().map(|p| p[2])
-        .fold(f64::INFINITY, f64::min) / minor).ceil() as i64);
+    let mut next_level = (surface.nodes.iter().map(|p| p[2])
+        .fold(f64::INFINITY, f64::min) / minor).ceil() as i64;
     let max_level = (surface.nodes.iter().map(|p| p[2])
         .fold(f64::NEG_INFINITY, f64::max) / minor).floor() as i64;
     while next_level <= max_level {
