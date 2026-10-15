@@ -2722,6 +2722,16 @@ fn place(host: &mut dyn HostApi, mut ent: EntityType, layer: &str, source: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn contour_label_uses_arc_length_midpoint() {
+        let p = [[0.,0.],[10.,0.],[10.,30.]];
+        assert_eq!(contour_label_position(&p, 10.), Some([10.,10.]));
+    }
+    #[test]
+    fn contour_label_skips_short_and_degenerate_curves() {
+        assert!(contour_label_position(&[[0.,0.],[1.,0.]], 5.).is_none());
+        assert!(contour_label_position(&[[0.,0.],[0.,0.]], 0.1).is_none());
+    }
     use codec::tables::{AppId, TableEntry};
     use codec::{CadDocument, DwgReader, DwgWriter};
     use landsurvey::alignment;
