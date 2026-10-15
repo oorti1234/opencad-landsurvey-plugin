@@ -1,6 +1,6 @@
 //! Experimental batch contours for an existing TIN surface.
 //! Geometry stays host-independent; DXF/ribbon integration comes later.
-use crate::contour_chains::{stitch_segments, ContourChain};
+use crate::contour_chains::{stitch_segments_split_junctions, ContourChain};
 use crate::contours::segments_at_level;
 use crate::surface::Surface;
 
@@ -55,7 +55,7 @@ pub fn generate_contours(
         let level = base_elevation + (n as f64)*minor_interval;
         if !level.is_finite() { return Err("non-finite contour level".into()); }
         let segments = segments_at_level(surface, level);
-        let chains = stitch_segments(&segments, tolerance)?;
+        let chains = stitch_segments_split_junctions(&segments, tolerance)?;
         for chain in chains {
             result.push(ClassifiedContour {
                 chain, major: n.rem_euclid(major_every as i64) == 0,
@@ -80,6 +80,15 @@ mod tests {
         assert_eq!(out.len(),9); // 0.5 through 4.5; endpoints do not yield segments
         assert_eq!(out.iter().filter(|c|c.major).count(),1);
         assert!((out.iter().find(|c|c.major).unwrap().chain.elevation-2.5).abs()<1e-12);
+    }
+    #[test]
+    fn level_vertex_with_four_branches_does_not_abort_generation() {
+        let s=Surface{nodes:vec![
+            [0.,0.,5.],[1.,0.,6.],[0.,1.,4.],[-1.,0.,6.],[0.,-1.,4.],
+        ],triangles:vec![[0,1,2],[0,2,3],[0,3,4],[0,4,1]]};
+        let output=generate_contours(&s,0.5,5,0.,1e-8).unwrap();
+        assert!(!output.is_empty());
+        assert!(output.iter().all(|c|c.chain.vertices.len()>=2));
     }
     #[test]
     fn rejects_bad_intervals() {
