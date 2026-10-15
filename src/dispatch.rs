@@ -775,6 +775,21 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         host.push_info("LS_CONTOURS: no contours at the specified interval.");
         return;
     }
+    // Only replace contour geometry previously generated for this surface.
+    // Restrict by entity type and layer as well as XDATA to avoid touching
+    // original TIN edges, volume geometry or manually drawn entities.
+    let old: Vec<codec::Handle> = host.document().entities().filter_map(|e| {
+        let (name, kind) = surface_tag(e)?;
+        if !name.eq_ignore_ascii_case(args[0]) { return None; }
+        let expected = match kind {
+            "CONTOUR" => matches!(e, EntityType::Polyline3D(_))
+                && matches!(e.common().layer.as_str(), "LS-CONTOUR-MAJOR" | "LS-CONTOUR-MINOR"),
+            "CONTOUR_LABEL" => matches!(e, EntityType::Text(_))
+                && e.common().layer == "LS-CONTOUR-LABEL",
+            _ => false,
+        };
+        expected.then_some(e.common().handle)
+    }).collect();
     let mut batch = Batch::new();
     let mut total_vertices = 0usize;
     let (min_x, max_x, min_y, max_y) = surface.extent();
@@ -813,12 +828,19 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         }
     }
     host.push_undo("LS_CONTOURS");
+    let removed = old.iter().filter(|&&h| host.remove_entity(h)).count();
+    if removed != old.len() {
+        host.push_error(&format!(
+            "LS_CONTOURS: removed {} of {} old entities; verify drawing for duplicates.",
+            removed, old.len()
+        ));
+    }
     let drawn = batch.commit(host);
     host.bump_geometry();
     host.set_dirty();
     host.push_output(&format!(
-        "LS_CONTOURS: {} chains, {} vertices, {} major labels, {} total CAD entities.",
-        chains.len(), total_vertices, label_count, drawn
+        "LS_CONTOURS: {} chains, {} vertices, {} major labels; replaced {} old entities, created {} CAD entities.",
+        chains.len(), total_vertices, label_count, removed, drawn
     ));
 }
 
