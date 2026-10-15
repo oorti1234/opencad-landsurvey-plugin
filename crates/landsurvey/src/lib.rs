@@ -9,6 +9,7 @@ pub mod alignment;
 pub mod cogo;
 pub mod contours;
 pub mod contour_levels;
+pub mod contour_dxf;
 pub mod contour_chains;
 pub mod dxf;
 pub mod finish;
