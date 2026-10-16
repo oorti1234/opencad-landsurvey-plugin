@@ -954,6 +954,16 @@ fn saddle_assemble_command(host: &mut dyn HostApi, cmd: &str) {
         Ok(chains)=>chains,
         Err(e)=>{host.push_error(&format!("LS_SADDLE_ASSEMBLE: {e}"));return;}
     };
+    let saddle_loops=original.iter().filter(|c| {
+        c.closed && c.elevation==level && c.vertices.len()>=4 &&
+        (c.vertices[0][0]-verified[0].xy[0]).hypot(c.vertices[0][1]-verified[0].xy[1])<=1e-6
+    }).count();
+    if saddle_loops>0 {
+        host.push_info(&format!(
+            "LS_SADDLE_ASSEMBLE: {} closed saddle loop(s) detected. For this case A keeps the loop separate; B inserts the full loop in the connected traversal. This is a diagnostic representation, not a unique topographic interpretation.",
+            saddle_loops
+        ));
+    }
     let joined=match landsurvey::contour_chains::pair_chains_at_saddle(
         &original,verified[0].xy,level,1e-6,choice
     ) {
