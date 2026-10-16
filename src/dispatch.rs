@@ -1084,7 +1084,7 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
 fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
     if args.is_empty()||args.len()>5 {
-        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation] [ADAPT]");
+        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation] [ADAPT|LOCAL]");
         return;
     }
     let interval=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
@@ -1102,13 +1102,14 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
             _=>{host.push_error("LS_CONTOUR_SMOOTH: max XY deviation must be positive and finite");return;}
         }
     };
-    let adaptive=match args.get(4) {
-        None=>false,
-        Some(v) if v.eq_ignore_ascii_case("ADAPT")=>true,
-        _=>{host.push_error("LS_CONTOUR_SMOOTH: final option must be ADAPT");return;}
+    let mode=match args.get(4) {
+        None=>"STANDARD",
+        Some(v) if v.eq_ignore_ascii_case("ADAPT")=>"ADAPT",
+        Some(v) if v.eq_ignore_ascii_case("LOCAL")=>"LOCAL",
+        _=>{host.push_error("LS_CONTOUR_SMOOTH: final option must be ADAPT or LOCAL");return;}
     };
-    if adaptive && max_deviation.is_none() {
-        host.push_error("LS_CONTOUR_SMOOTH: ADAPT requires a positive XY limit");
+    if mode!="STANDARD" && max_deviation.is_none() {
+        host.push_error("LS_CONTOUR_SMOOTH: ADAPT/LOCAL requires a positive XY limit");
         return;
     }
     let surface=match resolve_named_surface(host,args[0]){
@@ -1120,7 +1121,12 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         Ok(c)=>c,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
     };
     let original:Vec<_>=source.iter().map(|item|item.chain.clone()).collect();
-    let (result,smoothed_count,kept_count)=if adaptive {
+    let (result,smoothed_count,kept_count)=if mode=="LOCAL" {
+        match landsurvey::contour_smoothing::local_preview(&original,max_deviation.unwrap()) {
+            Ok(v)=>v,
+            Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH LOCAL: {e}"));return;}
+        }
+    } else if mode=="ADAPT" {
         match landsurvey::contour_smoothing::adaptive_preview(
             &original,passes,max_deviation.unwrap()
         ){
@@ -1138,10 +1144,10 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         let n=curves.len();
         (curves,n,0)
     };
-    if adaptive {
+    if mode!="STANDARD" {
         host.push_output(&format!(
-            "LS_CONTOUR_SMOOTH ADAPT: {} chains smoothed, {} original chains retained; limit {:.4} (sampled XY only).",
-            smoothed_count,kept_count,max_deviation.unwrap()
+            "LS_CONTOUR_SMOOTH {}: {} chains smoothed, {} original chains retained; limit {:.4} (sampled XY only).",
+            mode,smoothed_count,kept_count,max_deviation.unwrap()
         ));
     }
     // Validate against the exact chains used to create the preview.
