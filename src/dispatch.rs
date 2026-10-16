@@ -107,6 +107,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             label_style_cmd(host, cmd);
             true
         }
+        "LS_CONTOUR_SMOOTH" => {
+            contour_smooth_command(host, cmd);
+            true
+        }
         "LS_CONTOUR_QA" => {
             contour_quality_command(host, cmd);
             true
@@ -1074,6 +1078,63 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
         )),
         Err(e)=>host.push_error(&format!("LS_CONTOUR_QA: {e}")),
     }
+}
+
+/// Temporary smooth overlay only; no original contour entities replaced.
+fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.is_empty()||args.len()>3 {
+        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1]");
+        return;
+    }
+    let interval=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
+        Ok(v) if v.is_finite()&&v>0.=>v,
+        _=>{host.push_error("LS_CONTOUR_SMOOTH: invalid interval");return;}
+    };
+    let passes=match args.get(2).unwrap_or(&"1").parse::<usize>(){
+        Ok(n) if (1..=3).contains(&n)=>n,
+        _=>{host.push_error("LS_CONTOUR_SMOOTH: passes must be 1..3");return;}
+    };
+    let surface=match resolve_named_surface(host,args[0]){
+        Ok(s)=>s,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
+    };
+    let source=match landsurvey::contour_levels::generate_contours(
+        &surface,interval,5,0.,1e-6
+    ){
+        Ok(c)=>c,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
+    };
+    let mut result=Vec::new();
+    for item in source {
+        match landsurvey::contour_smoothing::smooth_preview(&item.chain,passes){
+            Ok(c)=>result.push(c),
+            Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
+        }
+    }
+    let old:Vec<codec::Handle>=host.document().entities().filter_map(|e|{
+        let (name,kind)=surface_tag(e)?;
+        (name.eq_ignore_ascii_case(args[0]) && kind=="CONTOUR_SMOOTH_PREVIEW"
+            && matches!(e,EntityType::Polyline3D(_))
+            && e.common().layer=="LS-CONTOUR-SMOOTH-PREVIEW")
+            .then_some(e.common().handle)
+    }).collect();
+    let mut batch=Batch::new();
+    for c in &result {
+        let vertices=c.vertices.iter().map(|p|Vector3::new(p[0],p[1],c.elevation)).collect();
+        let mut poly=Polyline3D::from_points(vertices);
+        poly.flags.closed=c.closed;
+        let mut entity=EntityType::Polyline3D(poly);
+        entity.common_mut().color=Color::from_index(4);
+        batch.add_tagged(entity,"LS-CONTOUR-SMOOTH-PREVIEW",
+            surface_record(args[0],"CONTOUR_SMOOTH_PREVIEW"));
+    }
+    host.push_undo("LS_CONTOUR_SMOOTH");
+    let removed=old.iter().filter(|&&h|host.remove_entity(h)).count();
+    let created=batch.commit(host);
+    host.bump_geometry();host.set_dirty();
+    host.push_output(&format!(
+        "LS_CONTOUR_SMOOTH: {} temporary chains, {} passes, replaced {} of {} previews, created {} CAD entities. Visualization only; original contours and TIN unchanged. Check crossings manually.",
+        result.len(),passes,removed,old.len(),created
+    ));
 }
 
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
