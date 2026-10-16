@@ -107,6 +107,14 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             label_style_cmd(host, cmd);
             true
         }
+        "LS_SADDLE_CLEAR" => {
+            saddle_clear_command(host, cmd);
+            true
+        }
+        "LS_SADDLE_LOCATE" => {
+            saddle_locate_command(host, cmd);
+            true
+        }
         "LS_SADDLE_PREVIEW" => {
             saddle_preview_command(host, cmd);
             true
@@ -755,14 +763,19 @@ fn contour_label_position(vertices: &[[f64; 2]], min_length: f64) -> Option<[f64
 /// Usage: LS_SADDLE_PREVIEW <surface-name> [level=41.5]
 fn saddle_preview_command(host: &mut dyn HostApi, cmd: &str) {
     let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
-    if args.is_empty() || args.len() > 2 {
-        host.push_info("Usage: LS_SADDLE_PREVIEW <surface-name> [level=41.5]");
+    if args.is_empty() || args.len() > 3 {
+        host.push_info("Usage: LS_SADDLE_PREVIEW <surface-name> [level=41.5] [A|B|BOTH]");
         return;
     }
     let elevation = match args.get(1).unwrap_or(&"41.5").parse::<f64>() {
         Ok(z) if z.is_finite() => z,
         _ => {host.push_error("LS_SADDLE_PREVIEW: invalid elevation");return;}
     };
+    let mode = args.get(2).copied().unwrap_or("BOTH").to_ascii_uppercase();
+    if !matches!(mode.as_str(), "A" | "B" | "BOTH") {
+        host.push_error("LS_SADDLE_PREVIEW: expected A, B or BOTH");
+        return;
+    }
     let surface = match resolve_named_surface(host,args[0]) {
         Ok(s)=>s,
         Err(e)=>{host.push_error(&format!("LS_SADDLE_PREVIEW: {e}"));return;}
@@ -806,6 +819,7 @@ fn saddle_preview_command(host: &mut dyn HostApi, cmd: &str) {
     let mut batch=Batch::new();
     for (_,preview) in &previews {
         for (index,path) in preview.alternatives.iter().enumerate() {
+            if mode=="A" && index>=2 || mode=="B" && index<2 { continue; }
             let (layer,color)=if index<2 {("LS-SADDLE-OPTION-A",1)}
                 else {("LS-SADDLE-OPTION-B",4)};
             for pair in path.windows(2) {
@@ -827,6 +841,72 @@ fn saddle_preview_command(host: &mut dyn HostApi, cmd: &str) {
         "LS_SADDLE_PREVIEW: {} saddle(s) at Z {:.3}; {} preview lines on layers LS-SADDLE-OPTION-A (red) and LS-SADDLE-OPTION-B (cyan); replaced {} of {} previous lines. Diagnostic only: no contours altered.",
         previews.len(),elevation,created,removed,old.len()
     ));
+}
+
+/// Remove only program-generated saddle diagnostic lines for this surface.
+fn saddle_clear_command(host: &mut dyn HostApi, cmd: &str) {
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.len()!=1 {
+        host.push_info("Usage: LS_SADDLE_CLEAR <surface-name>");
+        return;
+    }
+    let old:Vec<codec::Handle>=host.document().entities().filter_map(|e| {
+        let (name,kind)=surface_tag(e)?;
+        (name.eq_ignore_ascii_case(args[0]) && kind=="SADDLE_PREVIEW"
+            && matches!(e,EntityType::Line(_))
+            && matches!(e.common().layer.as_str(),"LS-SADDLE-OPTION-A"|"LS-SADDLE-OPTION-B"))
+            .then_some(e.common().handle)
+    }).collect();
+    if old.is_empty() {
+        host.push_info("LS_SADDLE_CLEAR: no tagged preview lines for this surface.");
+        return;
+    }
+    host.push_undo("LS_SADDLE_CLEAR");
+    let removed=old.iter().filter(|&&handle|host.remove_entity(handle)).count();
+    if removed>0 {
+        host.bump_geometry();
+        host.set_dirty();
+    }
+    host.push_output(&format!(
+        "LS_SADDLE_CLEAR: removed {} of {} preview lines; original contours and TIN untouched.",
+        removed,old.len()
+    ));
+}
+
+/// Print exact coordinates for navigation with CAD's native zoom controls.
+fn saddle_locate_command(host: &mut dyn HostApi, cmd: &str) {
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len()>2 {
+        host.push_info("Usage: LS_SADDLE_LOCATE <surface-name> [level=41.5]");
+        return;
+    }
+    let elevation=match args.get(1).unwrap_or(&"41.5").parse::<f64>() {
+        Ok(z) if z.is_finite()=>z,
+        _=>{host.push_error("LS_SADDLE_LOCATE: invalid elevation");return;}
+    };
+    let surface=match resolve_named_surface(host,args[0]) {
+        Ok(s)=>s,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_LOCATE: {e}"));return;}
+    };
+    let segments=landsurvey::contours::segments_at_level(&surface,elevation);
+    match landsurvey::contour_topology::ambiguous_junctions(&segments,1e-6) {
+        Ok(junctions)=>{
+            let mut count=0;
+            for j in junctions {
+                if landsurvey::contour_topology::is_exact_level_saddle(
+                    &surface,j.xy,elevation,1e-6
+                ) {
+                    host.push_output(&format!(
+                        "LS_SADDLE_LOCATE: Z {:.3}, X {:.6}, Y {:.6}. Use CAD zoom/center at this XY.",
+                        elevation,j.xy[0],j.xy[1]
+                    ));
+                    count+=1;
+                }
+            }
+            if count==0 { host.push_info("LS_SADDLE_LOCATE: no interior saddles at this level."); }
+        }
+        Err(e)=>host.push_error(&format!("LS_SADDLE_LOCATE: {e}")),
+    }
 }
 
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
