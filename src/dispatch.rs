@@ -107,6 +107,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             label_style_cmd(host, cmd);
             true
         }
+        "LS_CONTOUR_QA" => {
+            contour_quality_command(host, cmd);
+            true
+        }
         "LS_SADDLE_ASSEMBLE" => {
             saddle_assemble_command(host, cmd);
             true
@@ -1006,6 +1010,44 @@ fn saddle_assemble_command(host: &mut dyn HostApi, cmd: &str) {
         "LS_SADDLE_ASSEMBLE: mode {}, elevation {:.3}, {} chains, {} edges; {} old diagnostic polylines removed, {} new. Original LS_CONTOURS and TIN unchanged.",
         choice,level,joined.len(),edges(&joined),removed,created
     ));
+}
+
+/// Report geometry health of a fresh, conservative contour calculation.
+/// Never modifies existing CAD entities or resolves saddle ambiguity.
+fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len()>3 {
+        host.push_info("Usage: LS_CONTOUR_QA <surface-name> [minor-interval=0.5] [major-every=5]");
+        return;
+    }
+    let minor=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
+        Ok(v) if v.is_finite() && v>0.=>v,
+        _=>{host.push_error("LS_CONTOUR_QA: invalid minor interval");return;}
+    };
+    let major=match args.get(2).unwrap_or(&"5").parse::<usize>(){
+        Ok(v) if v>0=>v,
+        _=>{host.push_error("LS_CONTOUR_QA: invalid major multiplier");return;}
+    };
+    let surface=match resolve_named_surface(host,args[0]){
+        Ok(s)=>s,
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA: {e}"));return;}
+    };
+    let contours=match landsurvey::contour_levels::generate_contours(
+        &surface,minor,major,0.,1e-6
+    ){
+        Ok(c)=>c,
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA: {e}"));return;}
+    };
+    let chains:Vec<_>=contours.into_iter().map(|c|c.chain).collect();
+    match landsurvey::contour_quality::audit_chains(&chains,1e-6){
+        Ok(q)=>host.push_output(&format!(
+            "LS_CONTOUR_QA: {} chains ({} open, {} closed), {} edges, {} zero-length, {} repeated, {} invalid chains, {} malformed closed. Calculated from conservative TIN isolines; CAD drawing unchanged.",
+            q.chains,q.open_chains,q.closed_chains,q.edges,
+            q.zero_length_edges,q.duplicate_edges,q.invalid_chains,
+            q.malformed_closed_chains
+        )),
+        Err(e)=>host.push_error(&format!("LS_CONTOUR_QA: {e}")),
+    }
 }
 
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
