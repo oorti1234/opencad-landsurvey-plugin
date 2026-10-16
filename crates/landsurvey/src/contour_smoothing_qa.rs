@@ -98,7 +98,7 @@ mod tests{
         let source=[c(1.,vec![[0.,0.],[1.,1.],[2.,0.]])];
         let preview=[crate::contour_smoothing::smooth_preview(&source[0],1).unwrap()];
         let q=audit_smoothing(&source,&preview).unwrap();
-        assert!(q.max_vertex_displacement>0.1,q.max_vertex_displacement.to_string());
+        assert!(q.max_vertex_displacement > 0.1, "deviation: {}", q.max_vertex_displacement);
     }
     #[test]
     fn detects_deviation_between_vertices(){
