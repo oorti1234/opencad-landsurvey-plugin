@@ -12,6 +12,27 @@ fn point_to_segment(p:[f64;2],a:[f64;2],b:[f64;2])->f64{
     let t=(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/len).clamp(0.,1.);
     (p[0]-a[0]-t*dx).hypot(p[1]-a[1]-t*dy)
 }
+/// Directed maximum distance of polyline vertices to the opposite polyline.
+/// For two straight polylines this gives the exact directed Hausdorff distance:
+/// distance to a union of segments is 1-Lipschitz, but its maximum along an
+/// individual segment can occur between endpoints. Sample each source
+/// segment at evenly spaced fractions to expose deviations at cut corners.
+/// This is a sampled estimate, not a certified Hausdorff bound.
+fn sampled_directed_distance(a:&[[f64;2]],b:&[[f64;2]])->f64 {
+    let mut worst:f64=0.;
+    for edge in a.windows(2) {
+        for k in 0..=8 {
+            let t=k as f64/8.;
+            let p=[edge[0][0]*(1.-t)+edge[1][0]*t,
+                   edge[0][1]*(1.-t)+edge[1][1]*t];
+            let d=b.windows(2).map(|other|
+                point_to_segment(p,other[0],other[1])
+            ).fold(f64::INFINITY,f64::min);
+            worst=worst.max(d);
+        }
+    }
+    worst
+}
 fn cross(a:[f64;2],b:[f64;2],c:[f64;2])->f64{
     (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])
 }
@@ -37,13 +58,14 @@ pub fn audit_smoothing(source:&[ContourChain],preview:&[ContourChain])->Result<S
                 .flatten().any(|n|!n.is_finite()) {
             return Err("invalid contour geometry".into());
         }
-        for &p in &smoothed.vertices {
-            let dist=original.vertices.windows(2)
-                .map(|segment|point_to_segment(p,segment[0],segment[1]))
-                .fold(f64::INFINITY,f64::min);
-            max_distance=max_distance.max(dist);
-            vertices+=1;
-        }
+        let original_to_preview=sampled_directed_distance(
+            &original.vertices,&smoothed.vertices
+        );
+        let preview_to_original=sampled_directed_distance(
+            &smoothed.vertices,&original.vertices
+        );
+        max_distance=max_distance.max(original_to_preview).max(preview_to_original);
+        vertices+=smoothed.vertices.len();
     }
     let mut crossings=0usize;
     for i in 0..preview.len(){
@@ -70,6 +92,20 @@ mod tests{
         let q=audit_smoothing(&source,&preview).unwrap();
         assert!((q.max_vertex_displacement-0.25).abs()<1e-10);
         assert_eq!(q.crossings_between_levels,0);
+    }
+    #[test]
+    fn chaikin_corner_cut_has_nonzero_bidirectional_distance(){
+        let source=[c(1.,vec![[0.,0.],[1.,1.],[2.,0.]])];
+        let preview=[crate::contour_smoothing::smooth_preview(&source[0],1).unwrap()];
+        let q=audit_smoothing(&source,&preview).unwrap();
+        assert!(q.max_vertex_displacement>0.1,q.max_vertex_displacement.to_string());
+    }
+    #[test]
+    fn detects_deviation_between_vertices(){
+        let source=[c(1.,vec![[0.,0.],[1.,1.],[2.,0.]])];
+        let preview=[c(1.,vec![[0.,0.],[2.,0.]])];
+        let q=audit_smoothing(&source,&preview).unwrap();
+        assert!(q.max_vertex_displacement>0.9);
     }
     #[test]
     fn flags_crossing_between_elevations(){
