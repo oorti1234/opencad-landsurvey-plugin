@@ -1083,8 +1083,8 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
 /// Temporary smooth overlay only; no original contour entities replaced.
 fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
-    if args.is_empty()||args.len()>4 {
-        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation]");
+    if args.is_empty()||args.len()>5 {
+        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation] [ADAPT]");
         return;
     }
     let interval=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
@@ -1102,6 +1102,15 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
             _=>{host.push_error("LS_CONTOUR_SMOOTH: max XY deviation must be positive and finite");return;}
         }
     };
+    let adaptive=match args.get(4) {
+        None=>false,
+        Some(v) if v.eq_ignore_ascii_case("ADAPT")=>true,
+        _=>{host.push_error("LS_CONTOUR_SMOOTH: final option must be ADAPT");return;}
+    };
+    if adaptive && max_deviation.is_none() {
+        host.push_error("LS_CONTOUR_SMOOTH: ADAPT requires a positive XY limit");
+        return;
+    }
     let surface=match resolve_named_surface(host,args[0]){
         Ok(s)=>s,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
     };
@@ -1111,12 +1120,29 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         Ok(c)=>c,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
     };
     let original:Vec<_>=source.iter().map(|item|item.chain.clone()).collect();
-    let mut result=Vec::new();
-    for item in source {
-        match landsurvey::contour_smoothing::smooth_preview(&item.chain,passes){
-            Ok(c)=>result.push(c),
+    let (result,smoothed_count,kept_count)=if adaptive {
+        match landsurvey::contour_smoothing::adaptive_preview(
+            &original,passes,max_deviation.unwrap()
+        ){
+            Ok(v)=>v,
             Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
         }
+    } else {
+        let mut curves=Vec::new();
+        for item in source {
+            match landsurvey::contour_smoothing::smooth_preview(&item.chain,passes){
+                Ok(c)=>curves.push(c),
+                Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
+            }
+        }
+        let n=curves.len();
+        (curves,n,0)
+    };
+    if adaptive {
+        host.push_output(&format!(
+            "LS_CONTOUR_SMOOTH ADAPT: {} chains smoothed, {} original chains retained; limit {:.4} (sampled XY only).",
+            smoothed_count,kept_count,max_deviation.unwrap()
+        ));
     }
     // Validate against the exact chains used to create the preview.
     match landsurvey::contour_smoothing_qa::audit_smoothing(&original,&result){
