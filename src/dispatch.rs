@@ -1039,6 +1039,32 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
         Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA: {e}"));return;}
     };
     let chains:Vec<_>=contours.into_iter().map(|c|c.chain).collect();
+    // Inspect only levels present in generated contours; do not touch CAD entities.
+    let mut elevations:Vec<f64>=chains.iter().map(|c|c.elevation).collect();
+    elevations.sort_by(f64::total_cmp);
+    elevations.dedup_by(|a,b|a.to_bits()==b.to_bits());
+    let mut junctions=Vec::new();
+    for level in elevations {
+        let segments=landsurvey::contours::segments_at_level(&surface,level);
+        match landsurvey::contour_topology::ambiguous_junctions(&segments,1e-6) {
+            Ok(mut found)=>junctions.append(&mut found),
+            Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA junction check: {e}"));return;}
+        }
+    }
+    match landsurvey::contour_quality::audit_endpoints(&surface,&chains,&junctions,1e-6) {
+        Ok(e)=>{
+            host.push_output(&format!(
+                "LS_CONTOUR_QA endpoints: {} boundary, {} ambiguous junction, {} unexplained interior, {} invalid. CAD drawing unchanged.",
+                e.boundary,e.junction,e.interior,e.invalid
+            ));
+            for p in e.interior_samples {
+                host.push_output(&format!(
+                    "  interior endpoint: X {:.3}, Y {:.3}, Z {:.3}",p[0],p[1],p[2]
+                ));
+            }
+        }
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA endpoint check: {e}"));return;}
+    }
     match landsurvey::contour_quality::audit_chains(&chains,1e-6){
         Ok(q)=>host.push_output(&format!(
             "LS_CONTOUR_QA: {} chains ({} open, {} closed), {} edges, {} zero-length, {} repeated, {} invalid chains, {} malformed closed. Calculated from conservative TIN isolines; CAD drawing unchanged.",
