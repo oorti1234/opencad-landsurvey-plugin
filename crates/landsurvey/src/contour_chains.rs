@@ -139,6 +139,37 @@ pub fn pair_chains_at_saddle(
         }
         tips.push((dy.atan2(dx),i,oriented));
     }
+    // A contour loop based at the saddle contributes two incident half-edges,
+    // although it is one closed chain. The former four-open-tip rule rejected
+    // this valid graph. Keep all original segments; never duplicate a link.
+    if tips.len()==2 {
+        let loops:Vec<(usize,&ContourChain)>=chains.iter().enumerate().filter(|(_,c)|
+            c.elevation==level && c.closed && c.vertices.len()>=4 &&
+            close(c.vertices[0]) && close(*c.vertices.last().unwrap())
+        ).collect();
+        if loops.len()==1 {
+            let (loop_id,cycle)=loops[0];
+            let loop_segments=cycle.vertices.len()-1;
+            let a=&tips[0].2;
+            let b=&tips[1].2;
+            let mut joined=a.clone(); // free -> saddle
+            if choice=='B' {
+                joined.extend(cycle.vertices.iter().skip(1).copied()); // saddle -> loop -> saddle
+            }
+            joined.extend(b[..b.len()-1].iter().rev().copied()); // saddle -> free
+            let chosen:BTreeSet<usize>=[tips[0].1,tips[1].1,loop_id].into_iter().collect();
+            let mut result:Vec<ContourChain>=chains.iter().enumerate()
+                .filter(|(i,_)|!chosen.contains(i)).map(|(_,c)|c.clone()).collect();
+            result.push(ContourChain{elevation:level,vertices:joined,closed:false});
+            if choice=='A' {result.push(cycle.clone());}
+            let input_edges:usize=chains.iter().map(|c|c.vertices.len().saturating_sub(1)).sum();
+            let output_edges:usize=result.iter().map(|c|c.vertices.len().saturating_sub(1)).sum();
+            if input_edges!=output_edges || loop_segments<3 {
+                return Err("saddle loop edge conservation failed".into());
+            }
+            return Ok(result);
+        }
+    }
     if tips.len()!=4 {
         let mut closed_at_center=0usize;
         let mut center_to_center=0usize;
@@ -279,6 +310,23 @@ mod tests {
         assert!(error.contains("found 2"));
         assert!(error.contains("1 saddle-to-saddle chain"));
         assert_eq!(chains,saved);
+    }
+    #[test]
+    fn closed_saddle_loop_and_two_open_arms_preserve_all_edges() {
+        let c=[0.,0.];
+        let chains=vec![
+            ContourChain{elevation:5.,vertices:vec![[2.,0.],[1.,0.],c],closed:false},
+            ContourChain{elevation:5.,vertices:vec![c,[0.,1.],[0.,2.]],closed:false},
+            ContourChain{elevation:5.,vertices:vec![c,[-1.,0.],[-1.,-1.],[0.,-1.],c],closed:true}
+        ];
+        let saved=chains.clone();
+        for choice in ['A','B'] {
+            let out=pair_chains_at_saddle(&chains,c,5.,1e-8,choice).unwrap();
+            assert_eq!(out.iter().map(|x|x.vertices.len()-1).sum::<usize>(),8);
+            assert!(out.iter().all(|x|x.elevation==5.));
+            assert_eq!(out.len(),if choice=='A'{2}else{1});
+            assert_eq!(chains,saved);
+        }
     }
     #[test]
     fn rejects_invalid_tolerance(){
