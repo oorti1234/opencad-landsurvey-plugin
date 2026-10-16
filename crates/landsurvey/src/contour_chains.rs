@@ -108,6 +108,57 @@ fn stitch_impl(
     Ok(output)
 }
 
+/// Merge exactly four open chains ending at a verified saddle, using a
+/// caller-selected non-crossing pairing. Default contour generation never
+/// calls this function. Preserves all original points and elevation.
+pub fn pair_chains_at_saddle(
+    chains: &[ContourChain],
+    center: [f64; 2],
+    level: f64,
+    tolerance: f64,
+    choice: char,
+) -> Result<Vec<ContourChain>, String> {
+    if !matches!(choice,'A'|'B') || !level.is_finite()
+        || !tolerance.is_finite() || tolerance<=0.0
+        || center.iter().any(|v|!v.is_finite()) {
+        return Err("invalid saddle pairing settings".into());
+    }
+    let close=|a:[f64;2]| (a[0]-center[0]).hypot(a[1]-center[1])<=tolerance;
+    let mut tips:Vec<(f64,usize,Vec<[f64;2]>)>=Vec::new();
+    for (i,c) in chains.iter().enumerate() {
+        if c.elevation!=level || c.closed || c.vertices.len()<2 {continue;}
+        let first=close(c.vertices[0]);
+        let last=close(*c.vertices.last().unwrap());
+        if first==last { continue; } // both or neither: unsafe to pair
+        let oriented:Vec<[f64;2]>=if last {c.vertices.clone()}
+            else {c.vertices.iter().rev().copied().collect()};
+        let p=oriented[oriented.len()-2];
+        let dx=p[0]-center[0];let dy=p[1]-center[1];
+        if !dx.is_finite() || !dy.is_finite() || dx.hypot(dy)<=tolerance {
+            continue;
+        }
+        tips.push((dy.atan2(dx),i,oriented));
+    }
+    if tips.len()!=4 {
+        return Err(format!("expected four eligible saddle branches, found {}",tips.len()));
+    }
+    tips.sort_by(|a,b|a.0.total_cmp(&b.0));
+    let indices=if choice=='A' {[(0,1),(2,3)]}
+        else {[(1,2),(3,0)]};
+    let mut merged=Vec::new();
+    for (a,b) in indices {
+        let mut points=tips[a].2.clone(); // free endpoint -> saddle
+        let right=&tips[b].2;
+        points.extend(right[..right.len()-1].iter().rev().copied());
+        merged.push(ContourChain{elevation:level,vertices:points,closed:false});
+    }
+    let selected:BTreeSet<usize>=tips.iter().map(|t|t.1).collect();
+    let mut output:Vec<ContourChain>=chains.iter().enumerate()
+        .filter(|(i,_)|!selected.contains(i)).map(|(_,c)|c.clone()).collect();
+    output.extend(merged);
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +228,28 @@ mod tests {
         assert_eq!(chains.len(),4);
         assert_eq!(chains.iter().map(|c|c.vertices.len()-1).sum::<usize>(),5);
         assert!(chains.iter().all(|c|!c.closed));
+    }
+    #[test]
+    fn selected_saddle_pairing_preserves_segment_count() {
+        let c=[0.,0.];
+        let branches=vec![
+            ContourChain{elevation:5.,vertices:vec![[1.,0.],c],closed:false},
+            ContourChain{elevation:5.,vertices:vec![c,[0.,1.]],closed:false},
+            ContourChain{elevation:5.,vertices:vec![[-1.,0.],c],closed:false},
+            ContourChain{elevation:5.,vertices:vec![c,[0.,-1.]],closed:false}
+        ];
+        for choice in ['A','B'] {
+            let combined=pair_chains_at_saddle(&branches,c,5.,1e-8,choice).unwrap();
+            assert_eq!(combined.len(),2);
+            assert_eq!(combined.iter().map(|p|p.vertices.len()-1).sum::<usize>(),4);
+            assert!(combined.iter().all(|p|p.elevation==5.));
+        }
+    }
+    #[test]
+    fn pairing_rejects_insufficient_branches_without_changes() {
+        let branch=ContourChain{elevation:5.,vertices:vec![[1.,0.],[0.,0.]],closed:false};
+        assert!(pair_chains_at_saddle(&[branch.clone()],[0.,0.],5.,1e-8,'A').is_err());
+        assert_eq!(branch.vertices.len(),2);
     }
     #[test]
     fn rejects_invalid_tolerance(){
