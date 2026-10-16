@@ -10,6 +10,7 @@ pub mod cogo;
 pub mod contours;
 pub mod contour_levels;
 pub mod contour_topology;
+pub mod contour_quality;
 pub mod saddle_pairing;
 pub mod contour_dxf;
 pub mod contour_chains;
