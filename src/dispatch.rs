@@ -1083,8 +1083,8 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
 /// Temporary smooth overlay only; no original contour entities replaced.
 fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
-    if args.is_empty()||args.len()>3 {
-        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1]");
+    if args.is_empty()||args.len()>4 {
+        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation]");
         return;
     }
     let interval=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
@@ -1094,6 +1094,13 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     let passes=match args.get(2).unwrap_or(&"1").parse::<usize>(){
         Ok(n) if (1..=3).contains(&n)=>n,
         _=>{host.push_error("LS_CONTOUR_SMOOTH: passes must be 1..3");return;}
+    };
+    let max_deviation=match args.get(3) {
+        None=>None,
+        Some(v)=>match v.parse::<f64>() {
+            Ok(d) if d.is_finite() && d>0.=>Some(d),
+            _=>{host.push_error("LS_CONTOUR_SMOOTH: max XY deviation must be positive and finite");return;}
+        }
     };
     let surface=match resolve_named_surface(host,args[0]){
         Ok(s)=>s,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
@@ -1118,6 +1125,19 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
                 "LS_CONTOUR_SMOOTH QA: {} preview vertices, sampled bidirectional maximum deviation {:.4} drawing units, {} strict crossings between different elevations. Tangencies and overlaps are NOT assessed.",
                 q.compared_vertices,q.max_vertex_displacement,q.crossings_between_levels
             ));
+            if let Some(limit)=max_deviation {
+                if q.max_vertex_displacement>limit {
+                    host.push_error(&format!(
+                        "LS_CONTOUR_SMOOTH: sampled deviation {:.4} exceeds limit {:.4}; preview not replaced. Original contours unchanged.",
+                        q.max_vertex_displacement,limit
+                    ));
+                    return;
+                }
+                host.push_output(&format!(
+                    "LS_CONTOUR_SMOOTH: sampled displacement within configured {:.4} drawing-unit limit (not a certified bound).",
+                    limit
+                ));
+            }
             if q.crossings_between_levels>0 {
                 host.push_error("LS_CONTOUR_SMOOTH: crossings detected; preview not drawn. Original contours unchanged.");
                 return;
