@@ -60,6 +60,38 @@ pub fn verified_saddle_options(
     saddle_pairing_options(segments, center, elevation, tolerance)
 }
 
+/// Read-only geometric preview of a pairing: each proposed continuation
+/// consists of two original branch endpoints joined through the same saddle.
+/// The preview does not change the terrain or decide which option is correct.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SaddlePreview {
+    pub alternatives: [[[f64; 2]; 3]; 4],
+}
+
+/// Returns four 3-point preview paths: the first two belong to choice A
+/// and the last two to choice B.
+pub fn saddle_preview_paths(
+    segments: &[ContourSegment],
+    center: [f64; 2],
+    elevation: f64,
+    tolerance: f64,
+) -> Option<SaddlePreview> {
+    let choices = saddle_pairing_options(segments, center, elevation, tolerance)?;
+    let endpoint = |index: usize| -> [f64; 2] {
+        let s = &segments[index];
+        if (s.start[0]-center[0]).hypot(s.start[1]-center[1]) <= tolerance {
+            s.end
+        } else { s.start }
+    };
+    let make = |a: usize, b: usize| [endpoint(a), center, endpoint(b)];
+    let a = choices.alternatives[0];
+    let b = choices.alternatives[1];
+    Some(SaddlePreview { alternatives: [
+        make(a[0].0,a[0].1), make(a[1].0,a[1].1),
+        make(b[0].0,b[0].1), make(b[1].0,b[1].1),
+    ]})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +131,22 @@ mod tests {
         assert!(verified_saddle_options(&closed,&segments,[0.,0.],5.,1e-6).is_some());
         assert!(verified_saddle_options(&open,&segments,[0.,0.],5.,1e-6).is_none());
         assert!(verified_saddle_options(&closed,&segments,[0.,0.],5.5,1e-6).is_none());
+    }
+    #[test]
+    fn preview_paths_preserve_original_endpoints_and_center() {
+        let center=[0.,0.];
+        let branches=[
+            ContourSegment{elevation:5.,start:center,end:[1.,0.]},
+            ContourSegment{elevation:5.,start:center,end:[0.,1.]},
+            ContourSegment{elevation:5.,start:center,end:[-1.,0.]},
+            ContourSegment{elevation:5.,start:center,end:[0.,-1.]},
+        ];
+        let preview=saddle_preview_paths(&branches,center,5.,1e-6).unwrap();
+        assert!(preview.alternatives.iter().all(|p|p[1]==center));
+        let mut endpoints=preview.alternatives[0..2].iter()
+            .flat_map(|p|[p[0],p[2]]).collect::<Vec<_>>();
+        endpoints.sort_by(|a,b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        assert_eq!(endpoints,vec![[-1.,0.],[0.,-1.],[0.,1.],[1.,0.]]);
     }
     #[test]
     fn rejects_non_saddle_or_wrong_level() {
