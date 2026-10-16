@@ -856,13 +856,15 @@ fn saddle_clear_command(host: &mut dyn HostApi, cmd: &str) {
     }
     let old:Vec<codec::Handle>=host.document().entities().filter_map(|e| {
         let (name,kind)=surface_tag(e)?;
-        (name.eq_ignore_ascii_case(args[0]) && kind=="SADDLE_PREVIEW"
-            && matches!(e,EntityType::Line(_))
-            && matches!(e.common().layer.as_str(),"LS-SADDLE-OPTION-A"|"LS-SADDLE-OPTION-B"))
-            .then_some(e.common().handle)
+        (name.eq_ignore_ascii_case(args[0]) && (
+            (kind=="SADDLE_PREVIEW" && matches!(e,EntityType::Line(_))
+                && matches!(e.common().layer.as_str(),"LS-SADDLE-OPTION-A"|"LS-SADDLE-OPTION-B"))
+            || (kind=="SADDLE_ASSEMBLED" && matches!(e,EntityType::Polyline3D(_))
+                && e.common().layer=="LS-SADDLE-ASSEMBLED")
+        )).then_some(e.common().handle)
     }).collect();
     if old.is_empty() {
-        host.push_info("LS_SADDLE_CLEAR: no tagged preview lines for this surface.");
+        host.push_info("LS_SADDLE_CLEAR: no tagged diagnostic entities for this surface.");
         return;
     }
     host.push_undo("LS_SADDLE_CLEAR");
@@ -872,7 +874,7 @@ fn saddle_clear_command(host: &mut dyn HostApi, cmd: &str) {
         host.set_dirty();
     }
     host.push_output(&format!(
-        "LS_SADDLE_CLEAR: removed {} of {} preview lines; original contours and TIN untouched.",
+        "LS_SADDLE_CLEAR: removed {} of {} preview/assembled entities; original contours and TIN untouched.",
         removed,old.len()
     ));
 }
