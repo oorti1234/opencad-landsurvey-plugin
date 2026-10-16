@@ -107,6 +107,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             label_style_cmd(host, cmd);
             true
         }
+        "LS_SADDLE_ASSEMBLE" => {
+            saddle_assemble_command(host, cmd);
+            true
+        }
         "LS_SADDLE_CLEAR" => {
             saddle_clear_command(host, cmd);
             true
@@ -907,6 +911,89 @@ fn saddle_locate_command(host: &mut dyn HostApi, cmd: &str) {
         }
         Err(e)=>host.push_error(&format!("LS_SADDLE_LOCATE: {e}")),
     }
+}
+
+/// Experimental alternative chain assembly. Only creates independent
+/// polylines on a diagnostic layer and never overwrites LS_CONTOURS geometry.
+fn saddle_assemble_command(host: &mut dyn HostApi, cmd: &str) {
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.len()!=3 {
+        host.push_info("Usage: LS_SADDLE_ASSEMBLE <surface-name> <level> <A|B>");
+        return;
+    }
+    let level=match args[1].parse::<f64>() {
+        Ok(z) if z.is_finite()=>z,
+        _=>{host.push_error("LS_SADDLE_ASSEMBLE: invalid elevation");return;}
+    };
+    let choice=match args[2].to_ascii_uppercase().as_str() {
+        "A"=>'A',"B"=>'B',
+        _=>{host.push_error("LS_SADDLE_ASSEMBLE: choice must be A or B");return;}
+    };
+    let surface=match resolve_named_surface(host,args[0]) {
+        Ok(s)=>s,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_ASSEMBLE: {e}"));return;}
+    };
+    let segments=landsurvey::contours::segments_at_level(&surface,level);
+    let junctions=match landsurvey::contour_topology::ambiguous_junctions(&segments,1e-6) {
+        Ok(j)=>j,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_ASSEMBLE: {e}"));return;}
+    };
+    let verified:Vec<_>=junctions.iter().filter(|j|
+        landsurvey::contour_topology::is_exact_level_saddle(&surface,j.xy,level,1e-6)
+    ).collect();
+    if verified.len()!=1 || junctions.len()!=1 {
+        host.push_error(&format!(
+            "LS_SADDLE_ASSEMBLE: expected one verified and no other junctions at Z {:.3}; found {} verified and {} total.",
+            level,verified.len(),junctions.len()
+        ));
+        return;
+    }
+    let original=match landsurvey::contour_chains::stitch_segments_split_junctions(&segments,1e-6) {
+        Ok(chains)=>chains,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_ASSEMBLE: {e}"));return;}
+    };
+    let joined=match landsurvey::contour_chains::pair_chains_at_saddle(
+        &original,verified[0].xy,level,1e-6,choice
+    ) {
+        Ok(chains)=>chains,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_ASSEMBLE: {e}"));return;}
+    };
+    let edges=|chains:&[landsurvey::contour_chains::ContourChain]| ->usize {
+        chains.iter().map(|c|c.vertices.len().saturating_sub(1)).sum()
+    };
+    if edges(&original)!=edges(&joined) {
+        host.push_error("LS_SADDLE_ASSEMBLE: edge conservation failed; drawing unchanged.");
+        return;
+    }
+    let old:Vec<codec::Handle>=host.document().entities().filter_map(|e| {
+        let (name,kind)=surface_tag(e)?;
+        (name.eq_ignore_ascii_case(args[0]) && kind=="SADDLE_ASSEMBLED"
+            && matches!(e,EntityType::Polyline3D(_))
+            && e.common().layer=="LS-SADDLE-ASSEMBLED")
+            .then_some(e.common().handle)
+    }).collect();
+    let mut batch=Batch::new();
+    for chain in &joined {
+        if chain.vertices.len()<2 {continue;}
+        let vertices=chain.vertices.iter().map(|xy|
+            Vector3::new(xy[0],xy[1],level)
+        ).collect();
+        let mut polyline=Polyline3D::from_points(vertices);
+        polyline.flags.closed=chain.closed;
+        let mut entity=EntityType::Polyline3D(polyline);
+        entity.common_mut().color=Color::from_index(if choice=='A'{1}else{4});
+        batch.add_tagged(entity,"LS-SADDLE-ASSEMBLED",
+            surface_record(args[0],"SADDLE_ASSEMBLED"));
+    }
+    host.push_undo("LS_SADDLE_ASSEMBLE");
+    let removed=old.iter().filter(|&&h|host.remove_entity(h)).count();
+    let created=batch.commit(host);
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!(
+        "LS_SADDLE_ASSEMBLE: mode {}, elevation {:.3}, {} chains, {} edges; {} old diagnostic polylines removed, {} new. Original LS_CONTOURS and TIN unchanged.",
+        choice,level,joined.len(),edges(&joined),removed,created
+    ));
 }
 
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
