@@ -64,6 +64,55 @@ pub fn adaptive_preview(
     Ok((output,smoothed_count,unchanged_count))
 }
 
+/// Experimental local corner cutting on open chains only. Each vertex has a
+/// separately limited corner-cut fraction based on adjacent segment lengths.
+/// Closed loops are retained exactly in this first phase to avoid seams.
+pub fn local_preview(
+    chains:&[ContourChain],max_xy:f64
+)->Result<(Vec<ContourChain>,usize,usize),String>{
+    if !max_xy.is_finite() || max_xy<=0. {return Err("invalid local XY limit".into());}
+    let mut output=Vec::with_capacity(chains.len());
+    let mut changed=0;
+    let mut kept=0;
+    for chain in chains {
+        if chain.closed || chain.vertices.len()<3 {
+            output.push(chain.clone());kept+=1;continue;
+        }
+        if !chain.elevation.is_finite() || chain.vertices.iter().flatten().any(|v|!v.is_finite()){
+            return Err("invalid contour geometry".into());
+        }
+        let pts=&chain.vertices;
+        let mut fractions=vec![0.;pts.len()];
+        for i in 1..pts.len()-1 {
+            let left=(pts[i][0]-pts[i-1][0]).hypot(pts[i][1]-pts[i-1][1]);
+            let right=(pts[i+1][0]-pts[i][0]).hypot(pts[i+1][1]-pts[i][1]);
+            let span=left.max(right);
+            if span>0. {
+                fractions[i]=0.25_f64.min(max_xy/(2.*span));
+            }
+        }
+        let mut vertices=vec![pts[0]];
+        for i in 0..pts.len()-1 {
+            let a=pts[i];let b=pts[i+1];
+            let fa=fractions[i];let fb=fractions[i+1];
+            if fa>0. {vertices.push([a[0]*(1.-fa)+b[0]*fa,a[1]*(1.-fa)+b[1]*fa]);}
+            if fb>0. {vertices.push([a[0]*fb+b[0]*(1.-fb),a[1]*fb+b[1]*(1.-fb)]);}
+            if fb==0. {vertices.push(b);}
+        }
+        let candidate=ContourChain{elevation:chain.elevation,vertices,closed:false};
+        let qa=crate::contour_smoothing_qa::audit_smoothing(
+            std::slice::from_ref(chain),std::slice::from_ref(&candidate)
+        )?;
+        if qa.max_vertex_displacement<=max_xy {
+            if candidate.vertices!=chain.vertices {changed+=1;} else {kept+=1;}
+            output.push(candidate);
+        } else {
+            kept+=1;output.push(chain.clone());
+        }
+    }
+    Ok((output,changed,kept))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -103,6 +152,25 @@ mod tests{
         assert_eq!((smooth,kept),(1,0));
         assert_ne!(result[0].vertices,original.vertices);
         assert_eq!(result[0].elevation,original.elevation);
+    }
+    #[test]
+    fn local_smooths_sharp_corner_with_small_limit(){
+        let c=ContourChain{elevation:41.5,
+            vertices:vec![[0.,0.],[10.,10.],[20.,0.]],closed:false};
+        let (out,changed,kept)=local_preview(&[c.clone()],0.5).unwrap();
+        assert_eq!((changed,kept),(1,0));
+        assert_eq!(out[0].vertices.first(),c.vertices.first());
+        assert_eq!(out[0].vertices.last(),c.vertices.last());
+        let qa=crate::contour_smoothing_qa::audit_smoothing(&[c],&out).unwrap();
+        assert!(qa.max_vertex_displacement<=0.5);
+    }
+    #[test]
+    fn local_leaves_closed_saddle_loops_untouched(){
+        let c=ContourChain{elevation:5.,closed:true,
+            vertices:vec![[0.,0.],[1.,0.],[1.,1.],[0.,0.]]};
+        let (out,changed,kept)=local_preview(&[c.clone()],0.5).unwrap();
+        assert_eq!((changed,kept),(0,1));
+        assert_eq!(out[0],c);
     }
     #[test]
     fn rejects_excessive_passes(){
