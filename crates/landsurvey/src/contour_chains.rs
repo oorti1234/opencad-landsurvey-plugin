@@ -267,6 +267,20 @@ mod tests {
         assert_eq!(branch.vertices.len(),2);
     }
     #[test]
+    fn saddle_loop_reports_missing_free_branches_without_mutating_input() {
+        let c=[0.,0.];
+        let chains=vec![
+            ContourChain{elevation:5.,vertices:vec![[1.,0.],c],closed:false},
+            ContourChain{elevation:5.,vertices:vec![[0.,1.],c],closed:false},
+            ContourChain{elevation:5.,vertices:vec![c,[-1.,0.],[0.,-1.],c],closed:false},
+        ];
+        let saved=chains.clone();
+        let error=pair_chains_at_saddle(&chains,c,5.,1e-8,'A').unwrap_err();
+        assert!(error.contains("found 2"));
+        assert!(error.contains("1 saddle-to-saddle chain"));
+        assert_eq!(chains,saved);
+    }
+    #[test]
     fn rejects_invalid_tolerance(){
         assert!(stitch_segments(&[],0.).is_err());
     }
