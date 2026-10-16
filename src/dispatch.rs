@@ -799,10 +799,22 @@ fn contours_command(host: &mut dyn HostApi, cmd: &str) {
         "LS_CONTOURS topology: {} ambiguous junction(s), {} open chain(s), {} closed chain(s).",
         junctions.len(), open_count, chains.len()-open_count
     ));
+    let saddles = junctions.iter().filter(|j|
+        landsurvey::contour_topology::is_exact_level_saddle(
+            &surface, j.xy, j.elevation, 1e-6
+        )
+    ).count();
+    host.push_output(&format!(
+        "LS_CONTOURS topology: {} confirmed exact-level saddle candidate(s); remaining junctions require inspection.",
+        saddles
+    ));
     for j in junctions.iter().take(8) {
+        let label = if landsurvey::contour_topology::is_exact_level_saddle(
+            &surface, j.xy, j.elevation, 1e-6
+        ) { "interior saddle" } else { "unclassified junction" };
         host.push_output(&format!(
-            "  Junction degree {} at Z {:.3}, X {:.3}, Y {:.3}",
-            j.degree, j.elevation, j.xy[0], j.xy[1]
+            "  Junction degree {} at Z {:.3}, X {:.3}, Y {:.3} ({})",
+            j.degree, j.elevation, j.xy[0], j.xy[1], label
         ));
     }
     if junctions.len() > 8 {
