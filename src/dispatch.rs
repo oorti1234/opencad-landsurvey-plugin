@@ -1115,7 +1115,7 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     match landsurvey::contour_smoothing_qa::audit_smoothing(&original,&result){
         Ok(q)=>{
             host.push_output(&format!(
-                "LS_CONTOUR_SMOOTH QA: {} preview vertices, maximum vertex displacement {:.4} drawing units, {} strict crossings between different elevations. Tangencies and overlaps are NOT assessed.",
+                "LS_CONTOUR_SMOOTH QA: {} preview vertices, sampled bidirectional maximum deviation {:.4} drawing units, {} strict crossings between different elevations. Tangencies and overlaps are NOT assessed.",
                 q.compared_vertices,q.max_vertex_displacement,q.crossings_between_levels
             ));
             if q.crossings_between_levels>0 {
