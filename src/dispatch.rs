@@ -107,6 +107,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             label_style_cmd(host, cmd);
             true
         }
+        "LS_SADDLE_PREVIEW" => {
+            saddle_preview_command(host, cmd);
+            true
+        }
         "LS_CONTOURS" => {
             contours_command(host, cmd);
             true
@@ -745,6 +749,84 @@ fn contour_label_position(vertices: &[[f64; 2]], min_length: f64) -> Option<[f64
         distance -= segment;
     }
     None
+}
+
+/// Read-only topological alternatives, drawn in separate temporary CAD layers.
+/// Usage: LS_SADDLE_PREVIEW <surface-name> [level=41.5]
+fn saddle_preview_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len() > 2 {
+        host.push_info("Usage: LS_SADDLE_PREVIEW <surface-name> [level=41.5]");
+        return;
+    }
+    let elevation = match args.get(1).unwrap_or(&"41.5").parse::<f64>() {
+        Ok(z) if z.is_finite() => z,
+        _ => {host.push_error("LS_SADDLE_PREVIEW: invalid elevation");return;}
+    };
+    let surface = match resolve_named_surface(host,args[0]) {
+        Ok(s)=>s,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_PREVIEW: {e}"));return;}
+    };
+    let segments=landsurvey::contours::segments_at_level(&surface,elevation);
+    let junctions=match landsurvey::contour_topology::ambiguous_junctions(&segments,1e-6) {
+        Ok(j)=>j,
+        Err(e)=>{host.push_error(&format!("LS_SADDLE_PREVIEW: {e}"));return;}
+    };
+    let mut previews=Vec::new();
+    for j in junctions {
+        if !landsurvey::contour_topology::is_exact_level_saddle(
+            &surface,j.xy,elevation,1e-6
+        ) {continue;}
+        let incident:Vec<_>=segments.iter().copied().filter(|s| {
+            (s.start[0]-j.xy[0]).hypot(s.start[1]-j.xy[1])<=1e-6
+            || (s.end[0]-j.xy[0]).hypot(s.end[1]-j.xy[1])<=1e-6
+        }).collect();
+        if let Some(options)=landsurvey::saddle_pairing::verified_saddle_options(
+            &surface,&incident,j.xy,elevation,1e-6
+        ) {
+            if let Some(preview)=landsurvey::saddle_pairing::saddle_preview_paths(
+                &incident,j.xy,elevation,1e-6
+            ) {
+                let _=options; // Both alternatives remain purely diagnostic.
+                previews.push((j.xy,preview));
+            }
+        }
+    }
+    if previews.is_empty() {
+        host.push_info("LS_SADDLE_PREVIEW: no verified degree-4 saddle at this elevation.");
+        return;
+    }
+    let old:Vec<codec::Handle>=host.document().entities().filter_map(|e| {
+        let (name,kind)=surface_tag(e)?;
+        (name.eq_ignore_ascii_case(args[0]) && kind=="SADDLE_PREVIEW"
+            && matches!(e,EntityType::Line(_))
+            && matches!(e.common().layer.as_str(),"LS-SADDLE-OPTION-A"|"LS-SADDLE-OPTION-B"))
+            .then_some(e.common().handle)
+    }).collect();
+    let mut batch=Batch::new();
+    for (_,preview) in &previews {
+        for (index,path) in preview.alternatives.iter().enumerate() {
+            let (layer,color)=if index<2 {("LS-SADDLE-OPTION-A",1)}
+                else {("LS-SADDLE-OPTION-B",4)};
+            for pair in path.windows(2) {
+                let mut entity=EntityType::Line(Line::from_points(
+                    Vector3::new(pair[0][0],pair[0][1],elevation),
+                    Vector3::new(pair[1][0],pair[1][1],elevation),
+                ));
+                entity.common_mut().color=Color::from_index(color);
+                batch.add_tagged(entity,layer,surface_record(args[0],"SADDLE_PREVIEW"));
+            }
+        }
+    }
+    host.push_undo("LS_SADDLE_PREVIEW");
+    let removed=old.iter().filter(|&&handle|host.remove_entity(handle)).count();
+    let created=batch.commit(host);
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!(
+        "LS_SADDLE_PREVIEW: {} saddle(s) at Z {:.3}; {} preview lines on layers LS-SADDLE-OPTION-A (red) and LS-SADDLE-OPTION-B (cyan); replaced {} of {} previous lines. Diagnostic only: no contours altered.",
+        previews.len(),elevation,created,removed,old.len()
+    ));
 }
 
 fn contours_command(host: &mut dyn HostApi, cmd: &str) {
