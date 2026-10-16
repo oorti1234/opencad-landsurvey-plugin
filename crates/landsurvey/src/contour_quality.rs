@@ -64,11 +64,89 @@ pub fn audit_chains(chains:&[ContourChain], tolerance:f64)->Result<ContourQualit
     Ok(result)
 }
 
+/// Classify open-chain endpoints against actual TIN boundary edges and
+/// previously identified ambiguous junctions. No geometry is changed.
+#[derive(Debug,Clone,PartialEq)]
+pub struct EndpointAudit {
+    pub boundary:usize,
+    pub junction:usize,
+    pub interior:usize,
+    pub invalid:usize,
+    pub interior_samples:Vec<[f64;3]>,
+}
+pub fn audit_endpoints(
+    surface:&crate::surface::Surface,
+    chains:&[ContourChain],
+    junctions:&[crate::contour_topology::Junction],
+    tolerance:f64,
+)->Result<EndpointAudit,String>{
+    if !tolerance.is_finite() || tolerance<=0.0 {return Err("invalid endpoint tolerance".into());}
+    let mut edges:BTreeMap<(usize,usize),usize>=BTreeMap::new();
+    for tri in &surface.triangles {
+        if tri.iter().any(|&i|i>=surface.nodes.len()) {return Err("invalid TIN triangle".into());}
+        for (a,b) in [(tri[0],tri[1]),(tri[1],tri[2]),(tri[2],tri[0])] {
+            let edge=if a<b{(a,b)}else{(b,a)};
+            *edges.entry(edge).or_default()+=1;
+        }
+    }
+    let boundary:Vec<_>=edges.into_iter().filter(|(_,n)|*n==1)
+        .map(|((a,b),_)|(surface.nodes[a],surface.nodes[b])).collect();
+    let mut out=EndpointAudit{boundary:0,junction:0,interior:0,invalid:0,interior_samples:vec![]};
+    for c in chains.iter().filter(|c|!c.closed) {
+        for &p in [c.vertices.first(),c.vertices.last()].into_iter().flatten() {
+            if !c.elevation.is_finite() || p.iter().any(|v|!v.is_finite()) {
+                out.invalid+=1;continue;
+            }
+            let on_edge=boundary.iter().any(|(a,b)|{
+                let vx=b[0]-a[0];let vy=b[1]-a[1];
+                let len2=vx*vx+vy*vy;
+                if !len2.is_finite() || len2<=0.0 {return false;}
+                let t=(((p[0]-a[0])*vx+(p[1]-a[1])*vy)/len2).clamp(0.,1.);
+                let x=a[0]+t*vx;let y=a[1]+t*vy;
+                (p[0]-x).hypot(p[1]-y)<=tolerance
+            });
+            if on_edge {out.boundary+=1;continue;}
+            if junctions.iter().any(|j|j.elevation==c.elevation
+                && (p[0]-j.xy[0]).hypot(p[1]-j.xy[1])<=tolerance) {
+                out.junction+=1;continue;
+            }
+            out.interior+=1;
+            if out.interior_samples.len()<8 {
+                out.interior_samples.push([p[0],p[1],c.elevation]);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn chain(points:Vec<[f64;2]>,closed:bool)->ContourChain{
         ContourChain{elevation:41.5,vertices:points,closed}
+    }
+    #[test]
+    fn identifies_boundary_and_interior_endpoints() {
+        let surface=crate::surface::Surface{
+            nodes:vec![[0.,0.,0.],[4.,0.,0.],[0.,4.,0.]],
+            triangles:vec![[0,1,2]],
+        };
+        let chains=vec![chain(vec![[2.,0.],[1.,1.]],false)];
+        let report=audit_endpoints(&surface,&chains,&[],1e-6).unwrap();
+        assert_eq!(report.boundary,1);
+        assert_eq!(report.interior,1);
+    }
+    #[test]
+    fn identifies_ambiguous_interior_junction() {
+        let surface=crate::surface::Surface{
+            nodes:vec![[0.,0.,0.],[4.,0.,0.],[0.,4.,0.]],
+            triangles:vec![[0,1,2]],
+        };
+        let j=crate::contour_topology::Junction{elevation:41.5,xy:[1.,1.],degree:4};
+        let report=audit_endpoints(&surface,&[chain(vec![[2.,0.],[1.,1.]],false)],&[j],1e-6).unwrap();
+        assert_eq!(report.boundary,1);
+        assert_eq!(report.junction,1);
+        assert_eq!(report.interior,0);
     }
     #[test]
     fn accepts_one_open_and_one_closed_contour(){
