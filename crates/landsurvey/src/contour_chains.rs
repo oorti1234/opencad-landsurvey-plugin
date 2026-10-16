@@ -140,7 +140,22 @@ pub fn pair_chains_at_saddle(
         tips.push((dy.atan2(dx),i,oriented));
     }
     if tips.len()!=4 {
-        return Err(format!("expected four eligible saddle branches, found {}",tips.len()));
+        let mut closed_at_center=0usize;
+        let mut center_to_center=0usize;
+        let mut interior_only=0usize;
+        for c in chains.iter().filter(|c|c.elevation==level && c.vertices.len()>=2) {
+            let a=close(c.vertices[0]);
+            let b=close(*c.vertices.last().unwrap());
+            if a && b {
+                if c.closed {closed_at_center+=1;} else {center_to_center+=1;}
+            } else if !a && !b && c.vertices[1..c.vertices.len()-1].iter().any(|&p|close(p)) {
+                interior_only+=1;
+            }
+        }
+        return Err(format!(
+            "expected four eligible saddle branches, found {}; {} saddle-to-saddle chain(s), {} closed chain(s) touching saddle at ends, {} chain(s) with saddle in interior. No changes applied.",
+            tips.len(),center_to_center,closed_at_center,interior_only
+        ));
     }
     tips.sort_by(|a,b|a.0.total_cmp(&b.0));
     let indices=if choice=='A' {[(0,1),(2,3)]}
