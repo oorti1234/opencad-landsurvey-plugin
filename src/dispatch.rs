@@ -1110,6 +1110,23 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
             Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
         }
     }
+    let original:Vec<_>=landsurvey::contour_levels::generate_contours(
+        &surface,interval,5,0.,1e-6
+    ).unwrap_or_default().into_iter().map(|c|c.chain).collect();
+    // Recompute QA only for previews with identical source ordering.
+    match landsurvey::contour_smoothing_qa::audit_smoothing(&original,&result){
+        Ok(q)=>{
+            host.push_output(&format!(
+                "LS_CONTOUR_SMOOTH QA: {} preview vertices, maximum vertex displacement {:.4} drawing units, {} strict crossings between different elevations. Tangencies and overlaps are NOT assessed.",
+                q.compared_vertices,q.max_vertex_displacement,q.crossings_between_levels
+            ));
+            if q.crossings_between_levels>0 {
+                host.push_error("LS_CONTOUR_SMOOTH: crossings detected; preview not drawn. Original contours unchanged.");
+                return;
+            }
+        }
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH QA: {e}"));return;}
+    }
     let old:Vec<codec::Handle>=host.document().entities().filter_map(|e|{
         let (name,kind)=surface_tag(e)?;
         (name.eq_ignore_ascii_case(args[0]) && kind=="CONTOUR_SMOOTH_PREVIEW"
