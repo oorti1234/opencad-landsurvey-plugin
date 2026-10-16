@@ -1103,6 +1103,7 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     ){
         Ok(c)=>c,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
     };
+    let original:Vec<_>=source.iter().map(|item|item.chain.clone()).collect();
     let mut result=Vec::new();
     for item in source {
         match landsurvey::contour_smoothing::smooth_preview(&item.chain,passes){
@@ -1110,10 +1111,7 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
             Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
         }
     }
-    let original:Vec<_>=landsurvey::contour_levels::generate_contours(
-        &surface,interval,5,0.,1e-6
-    ).unwrap_or_default().into_iter().map(|c|c.chain).collect();
-    // Recompute QA only for previews with identical source ordering.
+    // Validate against the exact chains used to create the preview.
     match landsurvey::contour_smoothing_qa::audit_smoothing(&original,&result){
         Ok(q)=>{
             host.push_output(&format!(
