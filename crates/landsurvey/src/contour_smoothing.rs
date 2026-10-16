@@ -38,6 +38,32 @@ pub fn smooth_preview(chain:&ContourChain,passes:usize)->Result<ContourChain,Str
     }
     Ok(ContourChain{elevation:chain.elevation,vertices:points,closed:chain.closed})
 }
+/// First adaptive stage: accept smoothing independently for each complete
+/// contour; retain its exact original coordinates if the sampled XY deviation
+/// exceeds the requested limit. Never changes topology or elevation.
+pub fn adaptive_preview(
+    chains:&[ContourChain],
+    passes:usize,
+    max_xy:f64
+)->Result<(Vec<ContourChain>,usize,usize),String>{
+    if !max_xy.is_finite() || max_xy<=0. {return Err("invalid XY limit".into());}
+    let mut output=Vec::with_capacity(chains.len());
+    let mut smoothed_count=0;
+    let mut unchanged_count=0;
+    for chain in chains {
+        let candidate=smooth_preview(chain,passes)?;
+        let report=crate::contour_smoothing_qa::audit_smoothing(
+            std::slice::from_ref(chain),std::slice::from_ref(&candidate)
+        )?;
+        if report.max_vertex_displacement<=max_xy {
+            output.push(candidate);smoothed_count+=1;
+        } else {
+            output.push(chain.clone());unchanged_count+=1;
+        }
+    }
+    Ok((output,smoothed_count,unchanged_count))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -56,6 +82,27 @@ mod tests{
         let s=smooth_preview(&c,2).unwrap();
         assert!(s.closed);
         assert_eq!(s.vertices.first(),s.vertices.last());
+    }
+    #[test]
+    fn adaptive_keeps_sharp_curve_when_limit_is_tiny() {
+        let original=ContourChain{elevation:41.5,
+            vertices:vec![[0.,0.],[1.,1.],[2.,0.]],closed:false};
+        let (result,smooth,kept)=adaptive_preview(
+            std::slice::from_ref(&original),1,0.001
+        ).unwrap();
+        assert_eq!((smooth,kept),(0,1));
+        assert_eq!(result[0],original);
+    }
+    #[test]
+    fn adaptive_smooths_when_limit_is_generous(){
+        let original=ContourChain{elevation:41.5,
+            vertices:vec![[0.,0.],[1.,1.],[2.,0.]],closed:false};
+        let (result,smooth,kept)=adaptive_preview(
+            std::slice::from_ref(&original),1,10.
+        ).unwrap();
+        assert_eq!((smooth,kept),(1,0));
+        assert_ne!(result[0].vertices,original.vertices);
+        assert_eq!(result[0].elevation,original.elevation);
     }
     #[test]
     fn rejects_excessive_passes(){
