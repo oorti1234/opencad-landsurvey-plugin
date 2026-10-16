@@ -777,7 +777,7 @@ fn saddle_preview_command(host: &mut dyn HostApi, cmd: &str) {
         if !landsurvey::contour_topology::is_exact_level_saddle(
             &surface,j.xy,elevation,1e-6
         ) {continue;}
-        let incident:Vec<_>=segments.iter().copied().filter(|s| {
+        let incident:Vec<_>=segments.iter().cloned().filter(|s| {
             (s.start[0]-j.xy[0]).hypot(s.start[1]-j.xy[1])<=1e-6
             || (s.end[0]-j.xy[0]).hypot(s.end[1]-j.xy[1])<=1e-6
         }).collect();
