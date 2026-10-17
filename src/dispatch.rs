@@ -1062,9 +1062,20 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
                 e.boundary,e.junction,e.interior,e.invalid
             ));
             for p in e.interior_samples {
-                host.push_output(&format!(
-                    "  interior endpoint: X {:.3}, Y {:.3}, Z {:.3}",p[0],p[1],p[2]
-                ));
+                let detail=landsurvey::contour_quality::inspect_endpoint_neighborhood(
+                    &surface,[p[0],p[1]],p[2],1e-6
+                );
+                match detail {
+                    Ok(d)=>host.push_output(&format!(
+                        "  interior endpoint: X {:.3}, Y {:.3}, Z {:.3}; raw segment incidence {}, covering TIN triangles {}, flat-at-level triangles {}, flat-at-level edges {}",
+                        p[0],p[1],p[2],d.raw_incident_segments,
+                        d.triangles_containing_xy,d.triangles_flat_at_level,
+                        d.flat_edges_at_level
+                    )),
+                    Err(error)=>host.push_error(&format!(
+                        "  endpoint X {:.3}, Y {:.3}: {}",p[0],p[1],error
+                    )),
+                }
             }
         }
         Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA endpoint check: {e}"));return;}
