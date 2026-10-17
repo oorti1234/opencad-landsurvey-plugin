@@ -82,8 +82,14 @@ fn stitch_impl(
         }
         let mut visited = vec![false; kept.len()];
         // Open chains first, then cycles. Sorted map makes output deterministic.
-        let starts: Vec<K> = adj.iter().filter(|(_,n)|n.len()!=2).map(|(k,_)|*k)
-            .chain(adj.keys().copied()).collect();
+        // A junction can have several independent outgoing chains. Revisit
+        // each non-degree-two node for every incident edge before beginning
+        // isolated degree-two cycles. Starting cycles too early could leave
+        // two artificial open ends at an ordinary degree-two vertex.
+        let starts: Vec<K> = adj.iter().filter(|(_,n)|n.len()!=2)
+            .flat_map(|(k,n)|std::iter::repeat(*k).take(n.len()))
+            .chain(adj.iter().filter(|(_,n)|n.len()==2).map(|(k,_)|*k))
+            .collect();
         for start in starts {
             if !adj[&start].iter().any(|(id,_)| !visited[*id]) { continue; }
             let mut path = vec![start];
@@ -210,6 +216,22 @@ mod tests {
     use super::*;
     fn segment(a:[f64;2],b:[f64;2])->ContourSegment{
         ContourSegment{elevation:5.,start:a,end:b}
+    }
+    #[test]
+    fn degree_four_junction_exhausts_all_arms_before_cycles(){
+        let segments=vec![
+            segment([0.,0.],[1.,0.]),segment([1.,0.],[2.,0.]),
+            segment([0.,0.],[-1.,0.]),segment([-1.,0.],[-2.,0.]),
+            segment([0.,0.],[0.,1.]),segment([0.,1.],[0.,2.]),
+            segment([0.,0.],[0.,-1.]),segment([0.,-1.],[0.,-2.]),
+        ];
+        let chains=stitch_segments_split_junctions(&segments,1e-8).unwrap();
+        assert_eq!(chains.len(),4);
+        assert_eq!(chains.iter().map(|c|c.vertices.len()-1).sum::<usize>(),8);
+        let center_ends=chains.iter().flat_map(|c|
+            [c.vertices.first(),c.vertices.last()]
+        ).flatten().filter(|p|**p==[0.,0.]).count();
+        assert_eq!(center_ends,4);
     }
     #[test]
     fn joins_reversed_segments_into_open_chain(){
