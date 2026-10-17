@@ -27,6 +27,7 @@ pub mod resection;
 pub mod rw5;
 pub mod sdr;
 pub mod surface;
+pub mod tin_spatial_index;
 pub mod text;
 pub mod transform;
 pub mod viz;
