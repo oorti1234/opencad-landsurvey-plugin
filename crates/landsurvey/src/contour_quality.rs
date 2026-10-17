@@ -119,6 +119,64 @@ pub fn audit_endpoints(
     Ok(out)
 }
 
+/// Read-only investigation of an unexplained contour endpoint.
+#[derive(Debug,Clone,PartialEq)]
+pub struct EndpointNeighborhood {
+    pub raw_incident_segments:usize,
+    pub triangles_containing_xy:usize,
+    pub triangles_flat_at_level:usize,
+    pub flat_edges_at_level:usize,
+}
+pub fn inspect_endpoint_neighborhood(
+    surface:&crate::surface::Surface,
+    point:[f64;2],level:f64,tol:f64
+)->Result<EndpointNeighborhood,String>{
+    if !tol.is_finite()||tol<=0.||!level.is_finite()
+        ||point.iter().any(|v|!v.is_finite()){
+        return Err("invalid endpoint neighborhood input".into());
+    }
+    let segments=crate::contours::segments_at_level(surface,level);
+    let incident=segments.iter().filter(|s|
+        (s.start[0]-point[0]).hypot(s.start[1]-point[1])<=tol ||
+        (s.end[0]-point[0]).hypot(s.end[1]-point[1])<=tol
+    ).count();
+    let mut covering=0usize;
+    let mut flat=0usize;
+    let mut edge_set=std::collections::BTreeSet::new();
+    for triangle in &surface.triangles{
+        if triangle.iter().any(|&idx|idx>=surface.nodes.len()){continue;}
+        let [a,b,c]=triangle.map(|idx|surface.nodes[idx]);
+        let cross=|p:[f64;3],q:[f64;3],r:[f64;2]|
+            (q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0]);
+        let area=cross(a,b,[c[0],c[1]]);
+        if area.abs()<=1e-14{continue;}
+        let u=cross(a,b,point)/area;
+        let v=cross(b,c,point)/area;
+        let w=cross(c,a,point)/area;
+        if u>=-1e-9&&v>=-1e-9&&w>=-1e-9 {
+            covering+=1;
+            if [a,b,c].iter().all(|n|(n[2]-level).abs()<=1e-10){flat+=1;}
+        }
+        for (i,j) in [(0,1),(1,2),(2,0)] {
+            let ni=triangle[i];let nj=triangle[j];
+            let p=surface.nodes[ni];let q=surface.nodes[nj];
+            if (p[2]-level).abs()>1e-10||(q[2]-level).abs()>1e-10{continue;}
+            let dx=q[0]-p[0];let dy=q[1]-p[1];
+            let length2=dx*dx+dy*dy;
+            if length2<=0.{continue;}
+            let t=(((point[0]-p[0])*dx+(point[1]-p[1])*dy)/length2).clamp(0.,1.);
+            let x=p[0]+t*dx;let y=p[1]+t*dy;
+            if (x-point[0]).hypot(y-point[1])<=tol{
+                edge_set.insert(if ni<nj{(ni,nj)}else{(nj,ni)});
+            }
+        }
+    }
+    Ok(EndpointNeighborhood{
+        raw_incident_segments:incident,triangles_containing_xy:covering,
+        triangles_flat_at_level:flat,flat_edges_at_level:edge_set.len()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +205,25 @@ mod tests {
         assert_eq!(report.boundary,1);
         assert_eq!(report.junction,1);
         assert_eq!(report.interior,0);
+    }
+    #[test]
+    fn endpoint_neighborhood_reports_raw_degree(){
+        let surface=crate::surface::Surface{
+            nodes:vec![[0.,0.,0.],[2.,0.,2.],[0.,2.,0.]],
+            triangles:vec![[0,1,2]]
+        };
+        let d=inspect_endpoint_neighborhood(&surface,[1.,0.],1.,1e-6).unwrap();
+        assert_eq!(d.raw_incident_segments,1);
+        assert!(d.triangles_containing_xy>=1);
+    }
+    #[test]
+    fn endpoint_neighborhood_detects_flat_edge(){
+        let surface=crate::surface::Surface{
+            nodes:vec![[0.,0.,1.],[2.,0.,1.],[0.,2.,2.]],
+            triangles:vec![[0,1,2]]
+        };
+        let d=inspect_endpoint_neighborhood(&surface,[1.,0.],1.,1e-6).unwrap();
+        assert_eq!(d.flat_edges_at_level,1);
     }
     #[test]
     fn accepts_one_open_and_one_closed_contour(){
