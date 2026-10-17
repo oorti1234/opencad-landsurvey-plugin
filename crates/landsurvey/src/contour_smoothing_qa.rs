@@ -81,6 +81,45 @@ pub fn audit_smoothing(source:&[ContourChain],preview:&[ContourChain])->Result<S
     Ok(SmoothingQuality{max_vertex_displacement:max_distance,
         crossings_between_levels:crossings,compared_vertices:vertices})
 }
+/// Sample each preview polyline against the TIN at vertices and segment
+/// midpoints. Fail closed when a sample lies outside the triangulation.
+#[derive(Debug,Clone,PartialEq)]
+pub struct TinElevationQuality {
+    pub samples:usize,
+    pub outside_tin:usize,
+    pub max_absolute_z_error:f64,
+}
+pub fn audit_tin_elevation(
+    surface:&crate::surface::Surface,
+    previews:&[ContourChain],
+)->Result<TinElevationQuality,String>{
+    if surface.triangles.iter().flatten().any(|&i|i>=surface.nodes.len()) {
+        return Err("invalid TIN indices".into());
+    }
+    let mut result=TinElevationQuality{samples:0,outside_tin:0,max_absolute_z_error:0.};
+    for chain in previews {
+        if !chain.elevation.is_finite() || chain.vertices.len()<2 ||
+           chain.vertices.iter().flatten().any(|v|!v.is_finite()) {
+            return Err("invalid contour samples".into());
+        }
+        let mut samples=chain.vertices.clone();
+        samples.extend(chain.vertices.windows(2).map(|v|
+            [(v[0][0]+v[1][0])*0.5,(v[0][1]+v[1][1])*0.5]));
+        for p in samples {
+            result.samples+=1;
+            match surface.interpolate_z(p[0],p[1]) {
+                Some(z) if z.is_finite()=>{
+                    result.max_absolute_z_error=result.max_absolute_z_error.max(
+                        (z-chain.elevation).abs()
+                    );
+                }
+                _=>result.outside_tin+=1,
+            }
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -112,6 +151,26 @@ mod tests{
         let src=[c(1.,vec![[0.,0.],[2.,2.]]),c(2.,vec![[0.,2.],[2.,0.]])];
         let q=audit_smoothing(&src,&src).unwrap();
         assert_eq!(q.crossings_between_levels,1);
+    }
+    #[test]
+    fn finds_off_contour_vertical_deviation(){
+        let tin=crate::surface::Surface {
+            nodes:vec![[0.,0.,0.],[2.,0.,2.],[0.,2.,0.]],
+            triangles:vec![[0,1,2]]
+        };
+        let curve=[c(1.,vec![[0.,0.],[1.,0.]])];
+        let report=audit_tin_elevation(&tin,&curve).unwrap();
+        assert!((report.max_absolute_z_error-1.).abs()<1e-9);
+        assert_eq!(report.outside_tin,0);
+    }
+    #[test]
+    fn reports_outside_tin_samples(){
+        let tin=crate::surface::Surface {
+            nodes:vec![[0.,0.,0.],[2.,0.,2.],[0.,2.,0.]],
+            triangles:vec![[0,1,2]]
+        };
+        let curve=[c(1.,vec![[3.,0.],[4.,0.]])];
+        assert_eq!(audit_tin_elevation(&tin,&curve).unwrap().outside_tin,3);
     }
     #[test]
     fn refuses_elevation_changes(){
