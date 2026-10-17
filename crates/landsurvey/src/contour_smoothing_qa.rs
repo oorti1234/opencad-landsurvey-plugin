@@ -156,6 +156,7 @@ pub fn audit_tin_elevation(
     if surface.triangles.iter().flatten().any(|&i|i>=surface.nodes.len()) {
         return Err("invalid TIN indices".into());
     }
+    let index=crate::tin_spatial_index::TinGridIndex::build(surface)?;
     let mut result=TinElevationQuality{samples:0,outside_tin:0,max_absolute_z_error:0.};
     for chain in previews {
         if !chain.elevation.is_finite() || chain.vertices.len()<2 ||
@@ -167,7 +168,7 @@ pub fn audit_tin_elevation(
             [(v[0][0]+v[1][0])*0.5,(v[0][1]+v[1][1])*0.5]));
         for p in samples {
             result.samples+=1;
-            match surface.interpolate_z(p[0],p[1]) {
+            match index.interpolate_z(surface,p[0],p[1]).or_else(||surface.interpolate_z(p[0],p[1])) {
                 Some(z) if z.is_finite()=>{
                     result.max_absolute_z_error=result.max_absolute_z_error.max(
                         (z-chain.elevation).abs()
