@@ -1161,18 +1161,32 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     // junction is kept exactly unchanged, independent of smoothing mode.
     // This prevents altering the critical saddle without silently changing
     // the existing curve connectivity.
-    let mut protected=Vec::new();
+    // Only calculate the raw isoline graph once per distinct elevation.
+    // Many contour chains share the same level; re-running every TIN triangle
+    // for each chain wasted work on large surveys.
+    let mut junctions_by_level:std::collections::BTreeMap<u64,Vec<landsurvey::contour_topology::Junction>>=
+        std::collections::BTreeMap::new();
     for chain in &original {
+        let level_key=chain.elevation.to_bits();
+        if junctions_by_level.contains_key(&level_key) {continue;}
         let at_level=landsurvey::contours::segments_at_level(&surface,chain.elevation);
         let joints=match landsurvey::contour_topology::ambiguous_junctions(&at_level,1e-6) {
             Ok(j)=>j,
             Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH saddle audit: {e}"));return;}
         };
-        let critical=joints.iter().any(|j|chain.vertices.iter().any(|p|
-            (p[0]-j.xy[0]).hypot(p[1]-j.xy[1])<=1e-6
-        ));
-        protected.push(critical);
+        junctions_by_level.insert(level_key,joints);
     }
+    let protected:Vec<bool>=original.iter().map(|chain| {
+        junctions_by_level[&chain.elevation.to_bits()].iter().any(|j|
+            chain.vertices.iter().any(|p|
+                (p[0]-j.xy[0]).hypot(p[1]-j.xy[1])<=1e-6
+            )
+        )
+    }).collect();
+    host.push_output(&format!(
+        "LS_CONTOUR_SMOOTH performance: inspected {} distinct contour levels across {} chains (cached junction diagnostics).",
+        junctions_by_level.len(),original.len()
+    ));
     let mut result=result;
     let mut restored=0usize;
     for (i,critical) in protected.iter().enumerate() {
