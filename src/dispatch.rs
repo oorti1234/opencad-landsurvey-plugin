@@ -1083,8 +1083,8 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
 /// Temporary smooth overlay only; no original contour entities replaced.
 fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
-    if args.is_empty()||args.len()>5 {
-        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation] [ADAPT|LOCAL]");
+    if args.is_empty()||args.len()>6 {
+        host.push_info("Usage: LS_CONTOUR_SMOOTH <surface-name> [interval=0.5] [passes=1] [max-xy-deviation] [ADAPT|LOCAL] [max-z-deviation]");
         return;
     }
     let interval=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
@@ -1112,6 +1112,13 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         host.push_error("LS_CONTOUR_SMOOTH: ADAPT/LOCAL requires a positive XY limit");
         return;
     }
+    let max_z=match args.get(5) {
+        None=>None,
+        Some(v)=>match v.parse::<f64>() {
+            Ok(z) if z.is_finite() && z>=0.=>Some(z),
+            _=>{host.push_error("LS_CONTOUR_SMOOTH: max Z deviation must be nonnegative and finite");return;}
+        }
+    };
     let surface=match resolve_named_surface(host,args[0]){
         Ok(s)=>s,Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH: {e}"));return;}
     };
@@ -1180,10 +1187,27 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
     // Read-only TIN height audit. Report deviations, but do not replace the
     // existing preview policy until a project-specific Z tolerance is defined.
     match landsurvey::contour_smoothing_qa::audit_tin_elevation(&surface,&result){
-        Ok(q)=>host.push_output(&format!(
-            "LS_CONTOUR_SMOOTH TIN QA: {} XY samples, {} outside TIN, max |TIN Z - contour Z| {:.4} drawing units. Informational only; not a certified accuracy check.",
-            q.samples,q.outside_tin,q.max_absolute_z_error
-        )),
+        Ok(q)=>{
+            host.push_output(&format!(
+                "LS_CONTOUR_SMOOTH TIN QA: {} XY samples, {} outside TIN, max |TIN Z - contour Z| {:.4} drawing units (sampled).",
+                q.samples,q.outside_tin,q.max_absolute_z_error
+            ));
+            if let Some(limit)=max_z {
+                if q.outside_tin>0 || q.max_absolute_z_error>limit {
+                    host.push_error(&format!(
+                        "LS_CONTOUR_SMOOTH: vertical gate rejected preview: {} outside TIN, sampled Z deviation {:.4} exceeds limit {:.4} or samples outside TIN. Existing previews unchanged.",
+                        q.outside_tin,q.max_absolute_z_error,limit
+                    ));
+                    return;
+                }
+                host.push_output(&format!(
+                    "LS_CONTOUR_SMOOTH: sampled Z deviation within {:.4} drawing-unit limit; not a certified continuous bound.",
+                    limit
+                ));
+            } else if q.outside_tin>0 {
+                host.push_info("LS_CONTOUR_SMOOTH: samples outside TIN; no Z limit set (diagnostic only).");
+            }
+        },
         Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH TIN QA: {e}"));return;}
     }
     let old:Vec<codec::Handle>=host.document().entities().filter_map(|e|{
