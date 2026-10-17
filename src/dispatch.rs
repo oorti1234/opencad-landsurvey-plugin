@@ -1157,6 +1157,34 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
             mode,smoothed_count,kept_count,max_deviation.unwrap()
         ));
     }
+    // Conservative protection: any original chain touching an ambiguous
+    // junction is kept exactly unchanged, independent of smoothing mode.
+    // This prevents altering the critical saddle without silently changing
+    // the existing curve connectivity.
+    let mut protected=Vec::new();
+    for chain in &original {
+        let at_level=landsurvey::contours::segments_at_level(&surface,chain.elevation);
+        let joints=match landsurvey::contour_topology::ambiguous_junctions(&at_level,1e-6) {
+            Ok(j)=>j,
+            Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH saddle audit: {e}"));return;}
+        };
+        let critical=joints.iter().any(|j|chain.vertices.iter().any(|p|
+            (p[0]-j.xy[0]).hypot(p[1]-j.xy[1])<=1e-6
+        ));
+        protected.push(critical);
+    }
+    let mut result=result;
+    let mut restored=0usize;
+    for (i,critical) in protected.iter().enumerate() {
+        if *critical && result[i]!=original[i] {
+            result[i]=original[i].clone();
+            restored+=1;
+        }
+    }
+    host.push_output(&format!(
+        "LS_CONTOUR_SMOOTH saddle protection: {} critical chain(s), {} smoothed preview(s) restored to exact TIN contour geometry.",
+        protected.iter().filter(|&&v|v).count(),restored
+    ));
     // Validate against the exact chains used to create the preview.
     match landsurvey::contour_smoothing_qa::audit_smoothing(&original,&result){
         Ok(q)=>{
