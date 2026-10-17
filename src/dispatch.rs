@@ -1177,6 +1177,15 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         }
         Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH QA: {e}"));return;}
     }
+    // Read-only TIN height audit. Report deviations, but do not replace the
+    // existing preview policy until a project-specific Z tolerance is defined.
+    match landsurvey::contour_smoothing_qa::audit_tin_elevation(&surface,&result){
+        Ok(q)=>host.push_output(&format!(
+            "LS_CONTOUR_SMOOTH TIN QA: {} XY samples, {} outside TIN, max |TIN Z - contour Z| {:.4} drawing units. Informational only; not a certified accuracy check.",
+            q.samples,q.outside_tin,q.max_absolute_z_error
+        )),
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH TIN QA: {e}"));return;}
+    }
     let old:Vec<codec::Handle>=host.document().entities().filter_map(|e|{
         let (name,kind)=surface_tag(e)?;
         (name.eq_ignore_ascii_case(args[0]) && kind=="CONTOUR_SMOOTH_PREVIEW"
