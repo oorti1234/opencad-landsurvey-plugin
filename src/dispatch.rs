@@ -1212,6 +1212,21 @@ fn contour_smooth_command(host:&mut dyn HostApi,cmd:&str){
         }
         Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH QA: {e}"));return;}
     }
+    // Reject previews that touch or overlap a contour of a different level.
+    // Exact source geometry remains untouched on every rejection.
+    match landsurvey::contour_smoothing_qa::inter_level_conflicts(&result,1e-6) {
+        Ok(c)=>{
+            host.push_output(&format!(
+                "LS_CONTOUR_SMOOTH intersection QA: {} strict crossings, {} contacts/tangencies, {} collinear overlaps across different elevations.",
+                c.crossings,c.touches,c.overlaps
+            ));
+            if c.crossings>0 || c.touches>0 || c.overlaps>0 {
+                host.push_error("LS_CONTOUR_SMOOTH: inter-level geometric conflict; preview not replaced.");
+                return;
+            }
+        },
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_SMOOTH intersection QA: {e}"));return;}
+    }
     // Read-only TIN height audit. Report deviations, but do not replace the
     // existing preview policy until a project-specific Z tolerance is defined.
     match landsurvey::contour_smoothing_qa::audit_tin_elevation(&surface,&result){
