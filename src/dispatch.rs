@@ -1062,6 +1062,16 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
                 e.boundary,e.junction,e.interior,e.invalid
             ));
             for p in e.interior_samples {
+                let end_count=chains.iter().filter(|chain|!chain.closed
+                    && (chain.elevation-p[2]).abs()<1e-9).flat_map(|chain|
+                        [chain.vertices.first(),chain.vertices.last()]
+                    ).flatten().filter(|v|
+                        (v[0]-p[0]).hypot(v[1]-p[1])<=1e-6
+                    ).count();
+                host.push_output(&format!(
+                    "  endpoint graph hint: {} open-chain end(s) at this XY/Z. Degree 2 with two ends indicates a possible stitching split; not a missing TIN edge.",
+                    end_count
+                ));
                 let detail=landsurvey::contour_quality::inspect_endpoint_neighborhood(
                     &surface,[p[0],p[1]],p[2],1e-6
                 );
