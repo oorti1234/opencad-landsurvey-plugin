@@ -13,6 +13,7 @@ pub struct DxfBuilder {
     lines: Vec<(String, [f64; 3], [f64; 3])>,
     texts: Vec<(String, [f64; 3], f64, String)>,
     points: Vec<(String, [f64; 3])>,
+    polylines3d: Vec<(String, Vec<[f64; 3]>, bool)>,
 }
 
 impl DxfBuilder {
@@ -38,6 +39,20 @@ impl DxfBuilder {
 
     pub fn point(&mut self, layer: &str, p: [f64; 3]) {
         self.points.push((layer.to_string(), p));
+    }
+
+    /// R12-compatible 3D POLYLINE; vertices retain absolute XYZ elevations.
+    /// A closed polyline does not need its initial vertex repeated.
+    pub fn polyline3d(&mut self, layer: &str, vertices: &[[f64; 3]], closed: bool) {
+        if vertices.len() < 2 || vertices.iter().flatten().any(|v| !v.is_finite()) {
+            return;
+        }
+        let mut verts = vertices.to_vec();
+        if closed && verts.len() >= 3 && verts.first() == verts.last() {
+            verts.pop();
+        }
+        if closed && verts.len() < 3 { return; }
+        self.polylines3d.push((layer.to_string(), verts, closed));
     }
 
     /// Render the full DXF document (HEADER + TABLES + ENTITIES + EOF).
@@ -68,6 +83,23 @@ impl DxfBuilder {
             s.push('\n');
             push_xyz(&mut s, 10, *a);
             push_xyz(&mut s, 11, *b);
+        }
+        for (layer, vertices, closed) in &self.polylines3d {
+            s.push_str("0\nPOLYLINE\n8\n");
+            s.push_str(layer);
+            // 8 = 3D polyline; 1 = closed in polygon direction.
+            s.push_str(&format!("\n66\n1\n70\n{}\n", if *closed { 9 } else { 8 }));
+            push_xyz(&mut s, 10, [0.0, 0.0, 0.0]);
+            for p in vertices {
+                s.push_str("0\nVERTEX\n8\n");
+                s.push_str(layer);
+                s.push('\n');
+                push_xyz(&mut s, 10, *p);
+                s.push_str("70\n32\n");
+            }
+            s.push_str("0\nSEQEND\n8\n");
+            s.push_str(layer);
+            s.push('\n');
         }
         for (layer, p) in &self.points {
             s.push_str("0\nPOINT\n8\n");
@@ -130,6 +162,18 @@ mod tests {
         assert_eq!(dxf.matches("\nTEXT\n").count(), 1);
         assert_eq!(dxf.matches("\nPOINT\n").count(), 1);
         assert!(dxf.contains("\n1\nHELLO\n"));
+    }
+
+    #[test]
+    fn three_d_polyline_preserves_elevations_and_closure() {
+        let mut d = DxfBuilder::new();
+        d.add_layer("CONTOURS_MAJOR", 2);
+        d.polyline3d("CONTOURS_MAJOR", &[[100.,200.,2.5],[110.,200.,2.5],[110.,210.,2.5]], true);
+        let text = d.build();
+        assert!(text.contains("0\nPOLYLINE\n8\nCONTOURS_MAJOR\n66\n1\n70\n9\n"));
+        assert_eq!(text.matches("0\nVERTEX\n").count(), 3);
+        assert!(text.contains("30\n2.500000\n"));
+        assert!(text.contains("0\nSEQEND\n"));
     }
 
     #[test]
