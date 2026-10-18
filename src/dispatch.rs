@@ -6,9 +6,9 @@
 use std::fs;
 
 use codec::xdata::{ExtendedDataRecord, XDataValue};
-use codec::entities::Mesh;
+use codec::entities::{Mesh, Polyline3D};
 use codec::{
-    Arc as CadArc, Circle, EntityType, Line, LwPolyline, Point as CadPoint, Text, Vector2, Vector3,
+    Arc as CadArc, Circle, Color, EntityType, Line, LwPolyline, Point as CadPoint, Text, Vector2, Vector3,
 };
 
 use ocs_plugin_api::host::HostApi;
@@ -79,6 +79,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
         }
         "LS_VOLUME" => {
             volume(host, cmd);
+            true
+        }
+        "LS_CONTOURS" => {
+            contours_command(host, cmd);
             true
         }
         "LS_CONTOURS_PREVIEW" => {
@@ -2287,4 +2291,116 @@ fn contours_preview_command(host: &mut dyn HostApi, cmd: &str) {
         "LS_CONTOURS_PREVIEW: {} chains ({} open, {} closed), {} major, {} vertices, {} edges. Drawing unchanged.",
         contours.len(), open, closed, majors, vertices, edges
     ));
+}
+
+
+/// Create true 3D contour polylines, replacing only previously generated
+/// entities tagged for the same surface. Keep original TIN untouched.
+fn contours_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len() > 3 {
+        host.push_info("Usage: LS_CONTOURS <surface-name> [minor-interval=0.5] [major-every=5]");
+        return;
+    }
+    let minor = match args.get(1).unwrap_or(&"0.5").parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => v,
+        _ => { host.push_error("LS_CONTOURS: invalid minor interval"); return; }
+    };
+    let major_every = match args.get(2).unwrap_or(&"5").parse::<usize>() {
+        Ok(v) if v > 0 => v,
+        _ => { host.push_error("LS_CONTOURS: invalid major multiplier"); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(s) => s,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS: {e}")); return; }
+    };
+    let contours = match landsurvey::contour_levels::generate_contours(
+        &surface, minor, major_every, 0.0, 1e-6,
+    ) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS: {e}")); return; }
+    };
+    if contours.is_empty() {
+        host.push_info("LS_CONTOURS: no contours at the specified interval.");
+        return;
+    }
+    let old: Vec<codec::Handle> = host.document().entities().filter_map(|e| {
+        let (name, kind) = surface_tag(e)?;
+        if !name.eq_ignore_ascii_case(args[0]) { return None; }
+        let matches_kind = match kind {
+            "CONTOUR" => matches!(e, EntityType::Polyline3D(_))
+                && matches!(e.common().layer.as_str(), "LS-CONTOUR-MAJOR" | "LS-CONTOUR-MINOR"),
+            "CONTOUR_LABEL" => matches!(e, EntityType::Text(_))
+                && e.common().layer == "LS-CONTOUR-LABEL",
+            _ => false,
+        };
+        matches_kind.then_some(e.common().handle)
+    }).collect();
+    let mut generated: Vec<(EntityType, &'static str, &'static str)> = Vec::new();
+    let (min_x,max_x,min_y,max_y) = surface.extent();
+    let label_height = ((max_x-min_x).max(max_y-min_y)/200.0).clamp(0.2,5.0);
+    let mut vertex_count=0usize;
+    let mut labels=0usize;
+    for classified in &contours {
+        let chain=&classified.chain;
+        if chain.vertices.len()<2 {continue;}
+        let points:Vec<Vector3>=chain.vertices.iter().map(|p|
+            Vector3::new(p[0],p[1],chain.elevation)
+        ).collect();
+        vertex_count+=points.len();
+        let mut poly=Polyline3D::from_points(points);
+        poly.flags.closed=chain.closed;
+        let mut entity=EntityType::Polyline3D(poly);
+        entity.common_mut().color=Color::from_index(if classified.major {2} else {8});
+        generated.push((entity,if classified.major {"LS-CONTOUR-MAJOR"} else {"LS-CONTOUR-MINOR"},"CONTOUR"));
+        if classified.major {
+            if let Some(xy)=contour_label_position(&chain.vertices,label_height*12.0) {
+                let mut txt=EntityType::Text(Text::with_value(
+                    format!("{:.2}",chain.elevation),
+                    Vector3::new(xy[0],xy[1],chain.elevation)
+                ).with_height(label_height));
+                txt.common_mut().color=Color::from_index(2);
+                generated.push((txt,"LS-CONTOUR-LABEL","CONTOUR_LABEL"));
+                labels+=1;
+            }
+        }
+    }
+    if generated.is_empty() {host.push_info("LS_CONTOURS: no drawable chains.");return;}
+    host.push_undo("LS_CONTOURS");
+    let removed=old.iter().filter(|&&h|host.remove_entity(h)).count();
+    if removed!=old.len() {
+        host.push_error(&format!("LS_CONTOURS: removed {} of {} tagged entities; check for duplicates.",removed,old.len()));
+    }
+    let created=generated.len();
+    for (entity,layer,kind) in generated {
+        tag_surface(host,entity,layer,args[0],kind);
+    }
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!(
+        "LS_CONTOURS: {} chains, {} vertices, {} major labels; replaced {} tagged entities, created {} CAD entities.",
+        contours.len(),vertex_count,labels,removed,created
+    ));
+}
+
+/// Midpoint by arc length rather than by vertex index.
+fn contour_label_position(vertices:&[[f64;2]], min_length:f64)->Option<[f64;2]> {
+    if vertices.len()<2 {return None;}
+    let lengths:Vec<f64>=vertices.windows(2).map(|p|
+        (p[1][0]-p[0][0]).hypot(p[1][1]-p[0][1])
+    ).collect();
+    let total:f64=lengths.iter().sum();
+    if !total.is_finite()||total<min_length||total<=0.0 {return None;}
+    let mut dist=total/2.0;
+    for (i,len) in lengths.iter().enumerate() {
+        if dist<=*len && *len>0.0 {
+            let t=dist/len;
+            return Some([
+                vertices[i][0]+t*(vertices[i+1][0]-vertices[i][0]),
+                vertices[i][1]+t*(vertices[i+1][1]-vertices[i][1]),
+            ]);
+        }
+        dist-=len;
+    }
+    None
 }
