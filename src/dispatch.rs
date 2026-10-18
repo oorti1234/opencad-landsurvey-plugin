@@ -2244,4 +2244,3 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
     }
 }
 
-/// Temporary smooth overlay only; no original contour entities replaced.
