@@ -81,6 +81,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             volume(host, cmd);
             true
         }
+        "LS_CONTOUR_QA" => {
+            contour_quality_command(host, cmd);
+            true
+        }
         "LS_SURFACE" => {
             build_surface(host, cmd);
             true
@@ -2155,3 +2159,89 @@ mod tests {
         assert_eq!(surf.triangles, sample_surface().triangles);
     }
 }
+
+
+fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len()>3 {
+        host.push_info("Usage: LS_CONTOUR_QA <surface-name> [minor-interval=0.5] [major-every=5]");
+        return;
+    }
+    let minor=match args.get(1).unwrap_or(&"0.5").parse::<f64>(){
+        Ok(v) if v.is_finite() && v>0.=>v,
+        _=>{host.push_error("LS_CONTOUR_QA: invalid minor interval");return;}
+    };
+    let major=match args.get(2).unwrap_or(&"5").parse::<usize>(){
+        Ok(v) if v>0=>v,
+        _=>{host.push_error("LS_CONTOUR_QA: invalid major multiplier");return;}
+    };
+    let surface=match resolve_named_surface(host,args[0]){
+        Ok(s)=>s,
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA: {e}"));return;}
+    };
+    let contours=match landsurvey::contour_levels::generate_contours(
+        &surface,minor,major,0.,1e-6
+    ){
+        Ok(c)=>c,
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA: {e}"));return;}
+    };
+    let chains:Vec<_>=contours.into_iter().map(|c|c.chain).collect();
+    // Inspect only levels present in generated contours; do not touch CAD entities.
+    let mut elevations:Vec<f64>=chains.iter().map(|c|c.elevation).collect();
+    elevations.sort_by(f64::total_cmp);
+    elevations.dedup_by(|a,b|a.to_bits()==b.to_bits());
+    let mut junctions=Vec::new();
+    for level in elevations {
+        let segments=landsurvey::contours::segments_at_level(&surface,level);
+        match landsurvey::contour_topology::ambiguous_junctions(&segments,1e-6) {
+            Ok(mut found)=>junctions.append(&mut found),
+            Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA junction check: {e}"));return;}
+        }
+    }
+    match landsurvey::contour_quality::audit_endpoints(&surface,&chains,&junctions,1e-6) {
+        Ok(e)=>{
+            host.push_output(&format!(
+                "LS_CONTOUR_QA endpoints: {} boundary, {} ambiguous junction, {} unexplained interior, {} invalid. CAD drawing unchanged.",
+                e.boundary,e.junction,e.interior,e.invalid
+            ));
+            for p in e.interior_samples {
+                let end_count=chains.iter().filter(|chain|!chain.closed
+                    && (chain.elevation-p[2]).abs()<1e-9).flat_map(|chain|
+                        [chain.vertices.first(),chain.vertices.last()]
+                    ).flatten().filter(|v|
+                        (v[0]-p[0]).hypot(v[1]-p[1])<=1e-6
+                    ).count();
+                host.push_output(&format!(
+                    "  endpoint graph hint: {} open-chain end(s) at this XY/Z. Degree 2 with two ends indicates a possible stitching split; not a missing TIN edge.",
+                    end_count
+                ));
+                let detail=landsurvey::contour_quality::inspect_endpoint_neighborhood(
+                    &surface,[p[0],p[1]],p[2],1e-6
+                );
+                match detail {
+                    Ok(d)=>host.push_output(&format!(
+                        "  interior endpoint: X {:.3}, Y {:.3}, Z {:.3}; raw segment incidence {}, covering TIN triangles {}, flat-at-level triangles {}, flat-at-level edges {}",
+                        p[0],p[1],p[2],d.raw_incident_segments,
+                        d.triangles_containing_xy,d.triangles_flat_at_level,
+                        d.flat_edges_at_level
+                    )),
+                    Err(error)=>host.push_error(&format!(
+                        "  endpoint X {:.3}, Y {:.3}: {}",p[0],p[1],error
+                    )),
+                }
+            }
+        }
+        Err(e)=>{host.push_error(&format!("LS_CONTOUR_QA endpoint check: {e}"));return;}
+    }
+    match landsurvey::contour_quality::audit_chains(&chains,1e-6){
+        Ok(q)=>host.push_output(&format!(
+            "LS_CONTOUR_QA: {} chains ({} open, {} closed), {} edges, {} zero-length, {} repeated, {} invalid chains, {} malformed closed. Calculated from conservative TIN isolines; CAD drawing unchanged.",
+            q.chains,q.open_chains,q.closed_chains,q.edges,
+            q.zero_length_edges,q.duplicate_edges,q.invalid_chains,
+            q.malformed_closed_chains
+        )),
+        Err(e)=>host.push_error(&format!("LS_CONTOUR_QA: {e}")),
+    }
+}
+
+/// Temporary smooth overlay only; no original contour entities replaced.
