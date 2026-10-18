@@ -5,9 +5,9 @@
 
 use std::fs;
 
-use acadrust::xdata::{ExtendedDataRecord, XDataValue};
-use acadrust::entities::Mesh;
-use acadrust::{
+use codec::xdata::{ExtendedDataRecord, XDataValue};
+use codec::entities::Mesh;
+use codec::{
     Arc as CadArc, Circle, EntityType, Line, LwPolyline, Point as CadPoint, Text, Vector2, Vector3,
 };
 
@@ -870,7 +870,7 @@ fn surface_tag(e: &EntityType) -> Option<(&str, &str)> {
 /// * TIN-edge `Line`s tagged `[name, "TIN"]` (`LS_SURFACE` / `draw_tin`) — the
 ///   unique endpoints re-triangulated with [`Surface::from_points`], the same
 ///   Delaunay builder that produced them, which reproduces the original TIN.
-fn find_surface_in_document(doc: &acadrust::CadDocument, token: &str) -> Option<(String, Surface)> {
+fn find_surface_in_document(doc: &codec::CadDocument, token: &str) -> Option<(String, Surface)> {
     // Pass 1: exact geometry from a tagged Mesh.
     for e in doc.entities() {
         let EntityType::Mesh(m) = e else { continue };
