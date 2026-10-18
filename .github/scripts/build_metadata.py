@@ -23,7 +23,7 @@ def validate(root, rustc):
 
 def generate(root, rustc):
     host = validate(root, rustc)
-    source = locked_package((root / "Cargo.lock").read_text(), "acadrust")["source"]
+    source = locked_package((root / "Cargo.lock").read_text(), "opencadcodec")["source"]
     template = (root / "plugin.toml").read_text()
     # Metadata must belong to [opencad], regardless of later template sections.
     lines = ['rustc_version = ' + json.dumps(rustc),
