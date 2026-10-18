@@ -81,6 +81,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             volume(host, cmd);
             true
         }
+        "LS_CONTOURS_PREVIEW" => {
+            contours_preview_command(host, cmd);
+            true
+        }
         "LS_CONTOUR_QA" => {
             contour_quality_command(host, cmd);
             true
@@ -2244,3 +2248,43 @@ fn contour_quality_command(host:&mut dyn HostApi,cmd:&str){
     }
 }
 
+
+
+/// Generate a non-destructive contour preview while the focused contribution
+/// is adapted to the host's native 3D polyline and replacement APIs.
+fn contours_preview_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len() > 3 {
+        host.push_info("Usage: LS_CONTOURS_PREVIEW <surface-name> [minor-interval=0.5] [major-every=5]");
+        return;
+    }
+    let minor = match args.get(1).unwrap_or(&"0.5").parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => v,
+        _ => { host.push_error("LS_CONTOURS_PREVIEW: invalid interval"); return; }
+    };
+    let major_every = match args.get(2).unwrap_or(&"5").parse::<usize>() {
+        Ok(v) if v > 0 => v,
+        _ => { host.push_error("LS_CONTOURS_PREVIEW: invalid major multiplier"); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(s) => s,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS_PREVIEW: {e}")); return; }
+    };
+    let contours = match landsurvey::contour_levels::generate_contours(
+        &surface, minor, major_every, 0.0, 1e-6,
+    ) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS_PREVIEW: {e}")); return; }
+    };
+    let (mut open, mut closed, mut majors, mut edges, mut vertices) = (0, 0, 0, 0, 0);
+    for c in &contours {
+        if c.chain.closed { closed += 1; } else { open += 1; }
+        if c.major { majors += 1; }
+        vertices += c.chain.vertices.len();
+        edges += c.chain.vertices.len().saturating_sub(1);
+    }
+    host.push_output(&format!(
+        "LS_CONTOURS_PREVIEW: {} chains ({} open, {} closed), {} major, {} vertices, {} edges. Drawing unchanged.",
+        contours.len(), open, closed, majors, vertices, edges
+    ));
+}
