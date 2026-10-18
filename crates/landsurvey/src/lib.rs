@@ -6,6 +6,16 @@
 //! which wraps these functions in ribbon/command/XDATA glue.
 
 pub mod cogo;
+pub mod contours;
+pub mod contour_levels;
+pub mod contour_topology;
+pub mod contour_quality;
+pub mod contour_smoothing;
+pub mod contour_smoothing_qa;
+pub mod saddle_pairing;
+pub mod contour_dxf;
+pub mod contour_chains;
+pub mod tin_spatial_index;
 pub mod dxf;
 pub mod landxml;
 pub mod plan;
