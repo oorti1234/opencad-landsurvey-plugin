@@ -1613,8 +1613,8 @@ fn place(host: &mut dyn HostApi, mut ent: EntityType, layer: &str, source: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::tables::{AppId, TableEntry};
-    use acadrust::{CadDocument, DwgReader, DwgWriter};
+    use codec::tables::{AppId, TableEntry};
+    use codec::{CadDocument, DwgReader, DwgWriter};
     use std::io::Cursor;
 
     /// Minimal in-memory host: enough of `HostApi` for the dispatch paths the
@@ -1642,13 +1642,13 @@ mod tests {
         fn document_mut(&mut self) -> &mut CadDocument {
             &mut self.doc
         }
-        fn add_entity(&mut self, entity: EntityType) -> acadrust::Handle {
+        fn add_entity(&mut self, entity: EntityType) -> codec::Handle {
             self.doc.add_entity(entity).expect("add_entity")
         }
         fn bump_geometry(&mut self) {}
         fn read_record(
             &self,
-            handle: acadrust::Handle,
+            handle: codec::Handle,
             app_name: &str,
         ) -> Option<&ExtendedDataRecord> {
             self.doc
@@ -1657,7 +1657,7 @@ mod tests {
                 .extended_data
                 .get_record(app_name)
         }
-        fn write_record(&mut self, handle: acadrust::Handle, record: ExtendedDataRecord) -> bool {
+        fn write_record(&mut self, handle: codec::Handle, record: ExtendedDataRecord) -> bool {
             // Mirror the host's ensure_app_id contract (OCS #249).
             if !self.doc.app_ids.contains(&record.application_name) {
                 let mut app = AppId::new(&record.application_name);
@@ -1672,7 +1672,7 @@ mod tests {
                 None => false,
             }
         }
-        fn remove_record(&mut self, _handle: acadrust::Handle, _app_name: &str) -> bool {
+        fn remove_record(&mut self, _handle: codec::Handle, _app_name: &str) -> bool {
             false
         }
         fn push_undo(&mut self, _label: &str) {}
@@ -2041,7 +2041,7 @@ mod tests {
         rec.add_value(XDataValue::String("IRON PIN".into()));
         pt.common_mut().extended_data.add_record(rec);
         // What the host's ensure_layer does since #252: table entry + real handle.
-        let mut layer = acadrust::tables::layer::Layer::new("LS-PT-IP");
+        let mut layer = codec::tables::layer::Layer::new("LS-PT-IP");
         layer.handle = doc.allocate_handle();
         let _ = doc.layers.add(layer);
         let h = doc.add_entity(pt).expect("add point");
