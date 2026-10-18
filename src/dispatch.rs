@@ -1708,7 +1708,7 @@ mod tests {
             &mut self,
             _plugin_id: &'static str,
             _init: &mut dyn FnMut() -> Box<dyn std::any::Any + Send + Sync>,
-        ) -> &mut (dyn std::any::Any + Send + Sync) {
+        ) -> Option<&mut (dyn std::any::Any + Send + Sync)> {
             unimplemented!("not exercised by these tests")
         }
         fn document_reader(&self) -> Box<dyn ocs_plugin_api::host::DocumentReader + '_> {
