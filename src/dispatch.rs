@@ -85,6 +85,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             contours_command(host, cmd);
             true
         }
+        "LS_PROFILE_PREVIEW" => {
+            profile_preview_command(host, cmd);
+            true
+        }
         "LS_CONTOURS_PREVIEW" => {
             contours_preview_command(host, cmd);
             true
@@ -2403,4 +2407,48 @@ fn contour_label_position(vertices:&[[f64;2]], min_length:f64)->Option<[f64;2]> 
         dist-=len;
     }
     None
+}
+
+
+/// Read-only trial profile between two world-coordinate stations.
+fn profile_preview_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.len() != 6 {
+        host.push_info("Usage: LS_PROFILE_PREVIEW <surface-name> <x1> <y1> <x2> <y2> <spacing>");
+        return;
+    }
+    let mut numbers = [0.0_f64; 5];
+    for (value, input) in numbers.iter_mut().zip(&args[1..]) {
+        match input.parse::<f64>() {
+            Ok(v) if v.is_finite() => *value = v,
+            _ => { host.push_error("LS_PROFILE_PREVIEW: invalid coordinates or spacing"); return; }
+        }
+    }
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(s) => s,
+        Err(e) => { host.push_error(&format!("LS_PROFILE_PREVIEW: {e}")); return; }
+    };
+    let alignment = [[numbers[0], numbers[1]], [numbers[2], numbers[3]]];
+    let result = match landsurvey::profile::sample_longitudinal(&surface, &alignment, numbers[4]) {
+        Ok(p) => p,
+        Err(e) => { host.push_error(&format!("LS_PROFILE_PREVIEW: {e}")); return; }
+    };
+    let valid: Vec<f64> = result.samples.iter().filter_map(|s| s.elevation).collect();
+    let range = match (valid.iter().copied().reduce(f64::min), valid.iter().copied().reduce(f64::max)) {
+        (Some(low), Some(high)) => format!("{low:.3} .. {high:.3}"),
+        _ => "no stations inside TIN".to_owned(),
+    };
+    host.push_output(&format!(
+        "LS_PROFILE_PREVIEW: length {:.3}, {} stations, {} outside TIN, elevations {}. Drawing unchanged.",
+        result.length, result.samples.len(), result.outside_count, range
+    ));
+    for sample in result.samples.iter().take(8) {
+        let z = sample.elevation.map_or_else(|| "outside TIN".to_owned(), |v| format!("{v:.3}"));
+        host.push_output(&format!(
+            "  station {:.3}: E {:.3}, N {:.3}, Z {}", sample.station, sample.x, sample.y, z
+        ));
+    }
+    if result.samples.len() > 8 {
+        host.push_info("LS_PROFILE_PREVIEW: first 8 stations shown; CAD profile drawing will follow.");
+    }
 }
