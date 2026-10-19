@@ -2534,8 +2534,6 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
     let label=|value:String,station:f64,z:f64|EntityType::Text(
         Text::with_value(value,point(station,z)).with_height(txt_height)
     );
-    entities.push((label(format!("PROFILE {}   DATUM {:.2}   VERTICAL x{:.2}",args[0],datum,vertical_scale),
-        0.0,datum-txt_height*2.0/vertical_scale),"LS-PROFILE-LABEL","PROFILE_LABEL"));
     // Grid + banded station table. Limit labelling to approximately 10 columns
     // to avoid the overlap present in the first graphical prototype.
     let z_max=profile.samples.iter().filter_map(|s|s.elevation)
@@ -2554,31 +2552,69 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
             Vector3::new(chart_x-txt_height*5.0,y,0.0)).with_height(txt_height)),
             "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
     }
-    let table_top=chart_y-txt_height*5.0;
-    let row_height=txt_height*3.5;
+    // Put the title ABOVE the reticle instead of across the axes.
+    let top_y=chart_y+(grid_top-datum)*vertical_scale;
+    let title_y=top_y+txt_height*4.0;
+    entities.push((EntityType::Text(Text::with_value(
+        "PERFIL LONGITUDINAL - TERRENO NATURAL".to_owned(),
+        Vector3::new(chart_x,title_y,0.0)).with_height(txt_height*1.3)),
+        "LS-PROFILE-LABEL","PROFILE_LABEL"));
+    entities.push((EntityType::Text(Text::with_value(
+        format!("SUPERFICIE: {}   LONGITUD: {:.2} m   DATUM: {:.2} m   EXAG. VERTICAL: x{:.2}",
+            args[0],profile.length,datum,vertical_scale),
+        Vector3::new(chart_x,title_y-txt_height*2.0,0.0)).with_height(txt_height*0.75)),
+        "LS-PROFILE-LABEL","PROFILE_LABEL"));
+    let row_height=txt_height*4.5;
+    let table_top=chart_y-txt_height*6.0;
     let table_bottom=table_top-2.0*row_height;
     for y in [table_top,table_top-row_height,table_bottom] {
         entities.push((line(chart_x,y,chart_x+profile.length,y),
             "LS-PROFILE-TABLE","PROFILE_TABLE"));
     }
-    let label_stride=((profile.samples.len()+9)/10).max(1);
-    for (idx,sample) in profile.samples.iter().enumerate() {
-        if idx%label_stride!=0 && idx+1!=profile.samples.len() {continue;}
+    // Reserve a left-hand legend gutter; tick labels are inset at each column.
+    let label_stride=((profile.samples.len()+7)/8).max(1);
+    let mut positions:Vec<usize>=(0..profile.samples.len()).step_by(label_stride).collect();
+    if positions.last().copied()!=Some(profile.samples.len()-1) {
+        positions.push(profile.samples.len()-1);
+    }
+    // Exclude labels too close to the previous one, except when there is
+    // space for the terminal column.
+    let min_gap=(txt_height*8.0).max(profile.length/12.0);
+    let mut selected:Vec<usize>=Vec::new();
+    for idx in positions {
+        let x=profile.samples[idx].station;
+        if selected.last().map_or(true,|&last|x-profile.samples[last].station>=min_gap) {
+            selected.push(idx);
+        }
+    }
+    for (col,&idx) in selected.iter().enumerate() {
+        let sample=&profile.samples[idx];
         let x=chart_x+sample.station;
-        entities.push((line(x,table_bottom,x,chart_y+(grid_top-datum)*vertical_scale),
+        entities.push((line(x,table_bottom,x,top_y),
             "LS-PROFILE-GRID","PROFILE_GRID"));
-        // Station and elevation are separated into two table rows.
+        let left=if col==0 {x+txt_height*0.3} else {x+txt_height*0.25};
         entities.push((EntityType::Text(Text::with_value(format!("{:.1}",sample.station),
-            Vector3::new(x,table_top-row_height*0.65,0.0)).with_height(txt_height*0.75)),
+            Vector3::new(left,table_top-row_height*0.66,0.0)).with_height(txt_height*0.85)),
             "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
         let elevation=sample.elevation.map_or("N/D".to_owned(),|z|format!("{z:.2}"));
         entities.push((EntityType::Text(Text::with_value(elevation,
-            Vector3::new(x,table_top-row_height*1.65,0.0)).with_height(txt_height*0.75)),
+            Vector3::new(left,table_top-row_height*1.65,0.0)).with_height(txt_height*0.85)),
             "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
     }
-    entities.push((EntityType::Text(Text::with_value("ESTACION / COTA TN".to_owned(),
-        Vector3::new(chart_x,table_bottom-txt_height*2.0,0.0)).with_height(txt_height)),
+    // Separate legend from the data columns and explain missing TIN coverage.
+    let legend_x=chart_x-txt_height*12.0;
+    entities.push((EntityType::Text(Text::with_value("PROGRESIVA (m)".to_owned(),
+        Vector3::new(legend_x,table_top-row_height*0.66,0.0)).with_height(txt_height*0.9)),
         "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
+    entities.push((EntityType::Text(Text::with_value("COTA TN (m)".to_owned(),
+        Vector3::new(legend_x,table_top-row_height*1.65,0.0)).with_height(txt_height*0.9)),
+        "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
+    if profile.outside_count>0 {
+        entities.push((EntityType::Text(Text::with_value(
+            format!("N/D = fuera del TIN ({} estaciones)",profile.outside_count),
+            Vector3::new(chart_x,table_bottom-txt_height*2.1,0.0)).with_height(txt_height*0.85)),
+            "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
+    }
     host.push_undo("LS_PROFILE");
     let removed=old.iter().filter(|&&handle|host.remove_entity(handle)).count();
     if removed!=old.len() {
