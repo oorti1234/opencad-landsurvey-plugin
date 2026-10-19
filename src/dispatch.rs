@@ -85,6 +85,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             contours_command(host, cmd);
             true
         }
+        "LS_PROFILE" => {
+            profile_draw_command(host, cmd);
+            true
+        }
         "LS_PROFILE_PREVIEW" => {
             profile_preview_command(host, cmd);
             true
@@ -2451,4 +2455,107 @@ fn profile_preview_command(host: &mut dyn HostApi, cmd: &str) {
     if result.samples.len() > 8 {
         host.push_info("LS_PROFILE_PREVIEW: first 8 stations shown; CAD profile drawing will follow.");
     }
+}
+
+
+/// Draw a longitudinal elevation chart in model space, separated from the TIN.
+/// The diagram uses station as X and relative elevation as Y; entities are
+/// tagged by surface so rerunning this prototype safely replaces the chart.
+fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.len() != 8 && args.len() != 9 {
+        host.push_info("Usage: LS_PROFILE <surface> <x1> <y1> <x2> <y2> <spacing> <chart-x> <chart-y> [vertical-scale=1]");
+        return;
+    }
+    let mut nums = Vec::with_capacity(args.len()-1);
+    for token in &args[1..] {
+        match token.parse::<f64>() {
+            Ok(value) if value.is_finite() => nums.push(value),
+            _ => { host.push_error("LS_PROFILE: invalid numeric argument"); return; }
+        }
+    }
+    let (spacing, chart_x, chart_y)=(nums[4],nums[5],nums[6]);
+    let vertical_scale=*nums.get(7).unwrap_or(&1.0);
+    if spacing<=0.0 || vertical_scale<=0.0 {
+        host.push_error("LS_PROFILE: spacing and vertical scale must be positive");
+        return;
+    }
+    let surface=match resolve_named_surface(host,args[0]) {
+        Ok(v)=>v,
+        Err(e)=>{host.push_error(&format!("LS_PROFILE: {e}"));return;}
+    };
+    let alignment=[[nums[0],nums[1]],[nums[2],nums[3]]];
+    let profile=match landsurvey::profile::sample_longitudinal(&surface,&alignment,spacing) {
+        Ok(v)=>v,
+        Err(e)=>{host.push_error(&format!("LS_PROFILE: {e}"));return;}
+    };
+    if profile.samples.len()>5000 {
+        host.push_error("LS_PROFILE: more than 5000 stations; increase the spacing.");
+        return;
+    }
+    let z_min=match profile.samples.iter().filter_map(|s|s.elevation).reduce(f64::min) {
+        Some(z)=>z,
+        None=>{host.push_error("LS_PROFILE: alignment has no stations inside the TIN");return;}
+    };
+    // Round the diagram datum down to the nearest whole elevation unit.
+    let datum=z_min.floor();
+    let old: Vec<codec::Handle>=host.document().entities().filter_map(|e| {
+        let (name,kind)=surface_tag(e)?;
+        if !name.eq_ignore_ascii_case(args[0]) {return None;}
+        let layer=e.common().layer.as_str();
+        match (kind,layer,e) {
+            ("PROFILE_LINE","LS-PROFILE-GROUND",EntityType::Line(_))
+            | ("PROFILE_AXIS","LS-PROFILE-AXIS",EntityType::Line(_))
+            | ("PROFILE_LABEL","LS-PROFILE-LABEL",EntityType::Text(_))=>Some(e.common().handle),
+            _=>None,
+        }
+    }).collect();
+    let point=|station:f64,z:f64|Vector3::new(chart_x+station,chart_y+(z-datum)*vertical_scale,0.0);
+    let mut entities: Vec<(EntityType,&'static str,&'static str)> = Vec::new();
+    // Draw only connected pairs that are both defined on the TIN. Never bridge a gap.
+    for pair in profile.samples.windows(2) {
+        if let (Some(a),Some(b))=(pair[0].elevation,pair[1].elevation) {
+            entities.push((EntityType::Line(Line::from_points(
+                point(pair[0].station,a),point(pair[1].station,b)
+            )),"LS-PROFILE-GROUND","PROFILE_LINE"));
+        }
+    }
+    if !entities.iter().any(|(_,_,k)|*k=="PROFILE_LINE") {
+        host.push_error("LS_PROFILE: not enough consecutive valid stations to draw a ground line");
+        return;
+    }
+    entities.push((EntityType::Line(Line::from_points(
+        point(0.0,datum),point(profile.length,datum)
+    )),"LS-PROFILE-AXIS","PROFILE_AXIS"));
+    let txt_height=(profile.length/90.0).clamp(0.4,2.5);
+    let label=|value:String,station:f64,z:f64|EntityType::Text(
+        Text::with_value(value,point(station,z)).with_height(txt_height)
+    );
+    entities.push((label(format!("PROFILE {}   DATUM {:.2}   VERTICAL x{:.2}",args[0],datum,vertical_scale),
+        0.0,datum-txt_height*2.0/vertical_scale),"LS-PROFILE-LABEL","PROFILE_LABEL"));
+    // Small, bounded station/cota labels at ends and regular intervals.
+    let stride=(profile.samples.len()/12).max(1);
+    for (idx,sample) in profile.samples.iter().enumerate() {
+        if idx%stride!=0 && idx+1!=profile.samples.len() {continue;}
+        if let Some(z)=sample.elevation {
+            entities.push((label(format!("{:.1}: {:.2}",sample.station,z),
+                sample.station,z+txt_height*1.5/vertical_scale),
+                "LS-PROFILE-LABEL","PROFILE_LABEL"));
+        }
+    }
+    host.push_undo("LS_PROFILE");
+    let removed=old.iter().filter(|&&handle|host.remove_entity(handle)).count();
+    if removed!=old.len() {
+        host.push_error(&format!("LS_PROFILE: replaced {} of {} previous tagged entities",removed,old.len()));
+    }
+    let created=entities.len();
+    for (entity,layer,kind) in entities {
+        tag_surface(host,entity,layer,args[0],kind);
+    }
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!(
+        "LS_PROFILE: length {:.2}, {} stations ({} outside TIN), datum {:.2}, {} chart entities created, {} replaced. CAD chart at {:.2},{:.2}.",
+        profile.length,profile.samples.len(),profile.outside_count,datum,created,removed,chart_x,chart_y
+    ));
 }
