@@ -2506,7 +2506,10 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
         match (kind,layer,e) {
             ("PROFILE_LINE","LS-PROFILE-GROUND",EntityType::Line(_))
             | ("PROFILE_AXIS","LS-PROFILE-AXIS",EntityType::Line(_))
-            | ("PROFILE_LABEL","LS-PROFILE-LABEL",EntityType::Text(_))=>Some(e.common().handle),
+            | ("PROFILE_LABEL","LS-PROFILE-LABEL",EntityType::Text(_))
+            | ("PROFILE_GRID","LS-PROFILE-GRID",EntityType::Line(_))
+            | ("PROFILE_TABLE","LS-PROFILE-TABLE",EntityType::Line(_))
+            | ("PROFILE_TABLE_TEXT","LS-PROFILE-TEXT",EntityType::Text(_))=>Some(e.common().handle),
             _=>None,
         }
     }).collect();
@@ -2533,16 +2536,49 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
     );
     entities.push((label(format!("PROFILE {}   DATUM {:.2}   VERTICAL x{:.2}",args[0],datum,vertical_scale),
         0.0,datum-txt_height*2.0/vertical_scale),"LS-PROFILE-LABEL","PROFILE_LABEL"));
-    // Small, bounded station/cota labels at ends and regular intervals.
-    let stride=(profile.samples.len()/12).max(1);
-    for (idx,sample) in profile.samples.iter().enumerate() {
-        if idx%stride!=0 && idx+1!=profile.samples.len() {continue;}
-        if let Some(z)=sample.elevation {
-            entities.push((label(format!("{:.1}: {:.2}",sample.station,z),
-                sample.station,z+txt_height*1.5/vertical_scale),
-                "LS-PROFILE-LABEL","PROFILE_LABEL"));
-        }
+    // Grid + banded station table. Limit labelling to approximately 10 columns
+    // to avoid the overlap present in the first graphical prototype.
+    let z_max=profile.samples.iter().filter_map(|s|s.elevation)
+        .reduce(f64::max).unwrap_or(z_min);
+    let grid_step=((z_max-datum)/5.0).max(1.0).ceil();
+    let grid_top=datum+((z_max-datum)/grid_step).ceil()*grid_step;
+    let line=|x1:f64,y1:f64,x2:f64,y2:f64| EntityType::Line(
+        Line::from_points(Vector3::new(x1,y1,0.0),Vector3::new(x2,y2,0.0)));
+    for row in 0..=5 {
+        let z=datum+(row as f64)*grid_step;
+        if z>grid_top+1e-8 {break;}
+        let y=chart_y+(z-datum)*vertical_scale;
+        entities.push((line(chart_x,y,chart_x+profile.length,y),
+            "LS-PROFILE-GRID","PROFILE_GRID"));
+        entities.push((EntityType::Text(Text::with_value(format!("{z:.1}"),
+            Vector3::new(chart_x-txt_height*5.0,y,0.0)).with_height(txt_height)),
+            "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
     }
+    let table_top=chart_y-txt_height*5.0;
+    let row_height=txt_height*3.5;
+    let table_bottom=table_top-2.0*row_height;
+    for y in [table_top,table_top-row_height,table_bottom] {
+        entities.push((line(chart_x,y,chart_x+profile.length,y),
+            "LS-PROFILE-TABLE","PROFILE_TABLE"));
+    }
+    let label_stride=((profile.samples.len()+9)/10).max(1);
+    for (idx,sample) in profile.samples.iter().enumerate() {
+        if idx%label_stride!=0 && idx+1!=profile.samples.len() {continue;}
+        let x=chart_x+sample.station;
+        entities.push((line(x,table_bottom,x,chart_y+(grid_top-datum)*vertical_scale),
+            "LS-PROFILE-GRID","PROFILE_GRID"));
+        // Station and elevation are separated into two table rows.
+        entities.push((EntityType::Text(Text::with_value(format!("{:.1}",sample.station),
+            Vector3::new(x,table_top-row_height*0.65,0.0)).with_height(txt_height*0.75)),
+            "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
+        let elevation=sample.elevation.map_or("N/D".to_owned(),|z|format!("{z:.2}"));
+        entities.push((EntityType::Text(Text::with_value(elevation,
+            Vector3::new(x,table_top-row_height*1.65,0.0)).with_height(txt_height*0.75)),
+            "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
+    }
+    entities.push((EntityType::Text(Text::with_value("ESTACION / COTA TN".to_owned(),
+        Vector3::new(chart_x,table_bottom-txt_height*2.0,0.0)).with_height(txt_height)),
+        "LS-PROFILE-TEXT","PROFILE_TABLE_TEXT"));
     host.push_undo("LS_PROFILE");
     let removed=old.iter().filter(|&&handle|host.remove_entity(handle)).count();
     if removed!=old.len() {
