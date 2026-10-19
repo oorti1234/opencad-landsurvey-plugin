@@ -16,6 +16,7 @@ pub mod saddle_pairing;
 pub mod contour_dxf;
 pub mod contour_chains;
 pub mod tin_spatial_index;
+pub mod profile;
 pub mod dxf;
 pub mod landxml;
 pub mod plan;
