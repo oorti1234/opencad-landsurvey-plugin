@@ -89,6 +89,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             profile_draw_command(host, cmd);
             true
         }
+        "LS_PROFILE_FROM_ALIGNMENT" => {
+            profile_from_alignment_command(host, cmd);
+            true
+        }
         "LS_PROFILE_ALIGNMENT_PREVIEW" => {
             profile_alignment_preview_command(host, cmd);
             true
@@ -2497,6 +2501,65 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
         host.push_error("LS_PROFILE: more than 5000 stations; increase the spacing.");
         return;
     }
+    draw_sampled_profile(host,args[0],profile,chart_x,chart_y,vertical_scale);
+}
+
+
+/// Preview a longitudinal profile from exactly one open, straight-segment
+/// LWPolyline in a user-named layer. Does not modify the DWG.
+fn profile_alignment_preview_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.len()!=3 {
+        host.push_info("Usage: LS_PROFILE_ALIGNMENT_PREVIEW <surface-name> <alignment-layer> <spacing>");
+        return;
+    }
+    let spacing=match args[2].parse::<f64>() {
+        Ok(v) if v.is_finite() && v>0.0 => v,
+        _=>{host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: invalid spacing");return;}
+    };
+    let candidates:Vec<_>=host.document().entities().filter_map(|entity| {
+        if !entity.common().layer.eq_ignore_ascii_case(args[1]) {return None;}
+        match entity {
+            EntityType::LwPolyline(poly)=>Some(poly),
+            _=>None,
+        }
+    }).collect();
+    if candidates.len()!=1 {
+        host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: expected exactly 1 LWPolyline on layer '{}'; found {}. Move the intended open alignment onto a dedicated layer.",args[1],candidates.len()));
+        return;
+    }
+    let poly=candidates[0];
+    if poly.is_closed || poly.vertices.len()<2 {
+        host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: alignment must be an open polyline with at least 2 vertices");
+        return;
+    }
+    if poly.vertices.iter().any(|v| !v.bulge.is_finite() || v.bulge.abs()>1e-10) {
+        host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: arc bulges are not supported yet; use a segmented straight-vertex alignment");
+        return;
+    }
+    let xy:Vec<[f64;2]>=poly.vertices.iter().map(|v|[v.location.x,v.location.y]).collect();
+    // Drop the read-only CAD borrow before resolving/caching a named surface.
+    let surface=match resolve_named_surface(host,args[0]) {
+        Ok(v)=>v,
+        Err(e)=>{host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: {e}"));return;}
+    };
+    let p=match landsurvey::profile::sample_longitudinal(&surface,&xy,spacing) {
+        Ok(p)=>p,
+        Err(e)=>{host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: {e}"));return;}
+    };
+    let inside=p.samples.iter().filter_map(|s|s.elevation).collect::<Vec<_>>();
+    let elev_range=match (inside.iter().copied().reduce(f64::min),inside.iter().copied().reduce(f64::max)) {
+        (Some(z1),Some(z2))=>format!("{z1:.3} .. {z2:.3}"),
+        _=>"no TIN coverage".to_owned(),
+    };
+    host.push_output(&format!(
+        "LS_PROFILE_ALIGNMENT_PREVIEW: layer '{}' with {} vertices, length {:.3}, {} stations, {} outside TIN, elevations {}. DWG unchanged.",
+        args[1],xy.len(),p.length,p.samples.len(),p.outside_count,elev_range
+    ));
+}
+
+/// Shared rendering of a sampled terrain profile, irrespective of alignment source.
+fn draw_sampled_profile(host:&mut dyn HostApi,surface_name:&str,profile:landsurvey::profile::LongitudinalProfile,chart_x:f64,chart_y:f64,vertical_scale:f64) {
     let z_min=match profile.samples.iter().filter_map(|s|s.elevation).reduce(f64::min) {
         Some(z)=>z,
         None=>{host.push_error("LS_PROFILE: alignment has no stations inside the TIN");return;}
@@ -2505,7 +2568,7 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
     let datum=z_min.floor();
     let old: Vec<codec::Handle>=host.document().entities().filter_map(|e| {
         let (name,kind)=surface_tag(e)?;
-        if !name.eq_ignore_ascii_case(args[0]) {return None;}
+        if !name.eq_ignore_ascii_case(surface_name) {return None;}
         let layer=e.common().layer.as_str();
         match (kind,layer,e) {
             ("PROFILE_LINE","LS-PROFILE-GROUND",EntityType::Line(_))
@@ -2562,7 +2625,7 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
         "LS-PROFILE-LABEL","PROFILE_LABEL"));
     entities.push((EntityType::Text(Text::with_value(
         format!("SUPERFICIE: {}   LONGITUD: {:.2} m   DATUM: {:.2} m   EXAG. VERTICAL: x{:.2}",
-            args[0],profile.length,datum,vertical_scale),
+            surface_name,profile.length,datum,vertical_scale),
         Vector3::new(chart_x,title_y-txt_height*2.0,0.0)).with_height(txt_height*0.75)),
         "LS-PROFILE-LABEL","PROFILE_LABEL"));
     let row_height=txt_height*4.5;
@@ -2623,7 +2686,7 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
     }
     let created=entities.len();
     for (entity,layer,kind) in entities {
-        tag_surface(host,entity,layer,args[0],kind);
+        tag_surface(host,entity,layer,surface_name,kind);
     }
     host.bump_geometry();
     host.set_dirty();
@@ -2633,56 +2696,49 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
     ));
 }
 
-
-/// Preview a longitudinal profile from exactly one open, straight-segment
-/// LWPolyline in a user-named layer. Does not modify the DWG.
-fn profile_alignment_preview_command(host: &mut dyn HostApi, cmd: &str) {
-    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
-    if args.len()!=3 {
-        host.push_info("Usage: LS_PROFILE_ALIGNMENT_PREVIEW <surface-name> <alignment-layer> <spacing>");
+/// Draw a station/elevation chart following the entire segmented CAD alignment.
+/// Currently the sole LWPolyline on a named layer is used as its identifier.
+fn profile_from_alignment_command(host:&mut dyn HostApi,cmd:&str) {
+    let args:Vec<&str>=cmd.split_whitespace().skip(1).collect();
+    if args.len()!=5 && args.len()!=6 {
+        host.push_info("Usage: LS_PROFILE_FROM_ALIGNMENT <surface> <alignment-layer> <spacing> <chart-x> <chart-y> [vertical-scale=1]");
         return;
     }
-    let spacing=match args[2].parse::<f64>() {
-        Ok(v) if v.is_finite() && v>0.0 => v,
-        _=>{host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: invalid spacing");return;}
-    };
-    let candidates:Vec<_>=host.document().entities().filter_map(|entity| {
-        if !entity.common().layer.eq_ignore_ascii_case(args[1]) {return None;}
-        match entity {
-            EntityType::LwPolyline(poly)=>Some(poly),
-            _=>None,
+    let mut nums=Vec::new();
+    for token in &args[2..] {
+        match token.parse::<f64>() {
+            Ok(v) if v.is_finite()=>nums.push(v),
+            _=>{host.push_error("LS_PROFILE_FROM_ALIGNMENT: invalid numeric argument");return;}
         }
+    }
+    let scale=*nums.get(3).unwrap_or(&1.0);
+    if nums[0]<=0.0||scale<=0.0 {
+        host.push_error("LS_PROFILE_FROM_ALIGNMENT: spacing and vertical scale must be positive");return;
+    }
+    let alignments:Vec<_>=host.document().entities().filter_map(|e| {
+        if !e.common().layer.eq_ignore_ascii_case(args[1]) {return None;}
+        match e {EntityType::LwPolyline(p)=>Some(p),_=>None}
     }).collect();
-    if candidates.len()!=1 {
-        host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: expected exactly 1 LWPolyline on layer '{}'; found {}. Move the intended open alignment onto a dedicated layer.",args[1],candidates.len()));
-        return;
+    if alignments.len()!=1 {
+        host.push_error(&format!("LS_PROFILE_FROM_ALIGNMENT: expected one LWPolyline on '{}', found {}",args[1],alignments.len()));return;
     }
-    let poly=candidates[0];
-    if poly.is_closed || poly.vertices.len()<2 {
-        host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: alignment must be an open polyline with at least 2 vertices");
-        return;
+    let alignment=alignments[0];
+    if alignment.is_closed||alignment.vertices.len()<2 {
+        host.push_error("LS_PROFILE_FROM_ALIGNMENT: requires an open alignment with two or more vertices");return;
     }
-    if poly.vertices.iter().any(|v| !v.bulge.is_finite() || v.bulge.abs()>1e-10) {
-        host.push_error("LS_PROFILE_ALIGNMENT_PREVIEW: arc bulges are not supported yet; use a segmented straight-vertex alignment");
-        return;
+    if alignment.vertices.iter().any(|v|!v.bulge.is_finite()||v.bulge.abs()>1e-10) {
+        host.push_error("LS_PROFILE_FROM_ALIGNMENT: arcs are not yet supported; use straight segments");return;
     }
-    let xy:Vec<[f64;2]>=poly.vertices.iter().map(|v|[v.location.x,v.location.y]).collect();
-    // Drop the read-only CAD borrow before resolving/caching a named surface.
+    let xy:Vec<[f64;2]>=alignment.vertices.iter().map(|v|[v.location.x,v.location.y]).collect();
     let surface=match resolve_named_surface(host,args[0]) {
-        Ok(v)=>v,
-        Err(e)=>{host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: {e}"));return;}
+        Ok(v)=>v,Err(e)=>{host.push_error(&format!("LS_PROFILE_FROM_ALIGNMENT: {e}"));return;}
     };
-    let p=match landsurvey::profile::sample_longitudinal(&surface,&xy,spacing) {
-        Ok(p)=>p,
-        Err(e)=>{host.push_error(&format!("LS_PROFILE_ALIGNMENT_PREVIEW: {e}"));return;}
+    let profile=match landsurvey::profile::sample_longitudinal(&surface,&xy,nums[0]) {
+        Ok(v)=>v,Err(e)=>{host.push_error(&format!("LS_PROFILE_FROM_ALIGNMENT: {e}"));return;}
     };
-    let inside=p.samples.iter().filter_map(|s|s.elevation).collect::<Vec<_>>();
-    let elev_range=match (inside.iter().copied().reduce(f64::min),inside.iter().copied().reduce(f64::max)) {
-        (Some(z1),Some(z2))=>format!("{z1:.3} .. {z2:.3}"),
-        _=>"no TIN coverage".to_owned(),
-    };
-    host.push_output(&format!(
-        "LS_PROFILE_ALIGNMENT_PREVIEW: layer '{}' with {} vertices, length {:.3}, {} stations, {} outside TIN, elevations {}. DWG unchanged.",
-        args[1],xy.len(),p.length,p.samples.len(),p.outside_count,elev_range
-    ));
+    if profile.samples.len()>5000 {
+        host.push_error("LS_PROFILE_FROM_ALIGNMENT: more than 5000 stations; increase spacing");return;
+    }
+    host.push_info(&format!("LS_PROFILE_FROM_ALIGNMENT: {} alignment vertices, length {:.3} m",xy.len(),profile.length));
+    draw_sampled_profile(host,args[0],profile,nums[1],nums[2],scale);
 }
