@@ -2501,7 +2501,7 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
         host.push_error("LS_PROFILE: more than 5000 stations; increase the spacing.");
         return;
     }
-    draw_sampled_profile(host,args[0],profile,chart_x,chart_y,vertical_scale);
+    draw_sampled_profile(host,args[0],args[0],profile,chart_x,chart_y,vertical_scale);
 }
 
 
@@ -2559,7 +2559,7 @@ fn profile_alignment_preview_command(host: &mut dyn HostApi, cmd: &str) {
 }
 
 /// Shared rendering of a sampled terrain profile, irrespective of alignment source.
-fn draw_sampled_profile(host:&mut dyn HostApi,surface_name:&str,profile:landsurvey::profile::LongitudinalProfile,chart_x:f64,chart_y:f64,vertical_scale:f64) {
+fn draw_sampled_profile(host:&mut dyn HostApi,surface_name:&str,profile_key:&str,profile:landsurvey::profile::LongitudinalProfile,chart_x:f64,chart_y:f64,vertical_scale:f64) {
     let z_min=match profile.samples.iter().filter_map(|s|s.elevation).reduce(f64::min) {
         Some(z)=>z,
         None=>{host.push_error("LS_PROFILE: alignment has no stations inside the TIN");return;}
@@ -2568,7 +2568,7 @@ fn draw_sampled_profile(host:&mut dyn HostApi,surface_name:&str,profile:landsurv
     let datum=z_min.floor();
     let old: Vec<codec::Handle>=host.document().entities().filter_map(|e| {
         let (name,kind)=surface_tag(e)?;
-        if !name.eq_ignore_ascii_case(surface_name) {return None;}
+        if !name.eq_ignore_ascii_case(profile_key) {return None;}
         let layer=e.common().layer.as_str();
         match (kind,layer,e) {
             ("PROFILE_LINE","LS-PROFILE-GROUND",EntityType::Line(_))
@@ -2686,7 +2686,7 @@ fn draw_sampled_profile(host:&mut dyn HostApi,surface_name:&str,profile:landsurv
     }
     let created=entities.len();
     for (entity,layer,kind) in entities {
-        tag_surface(host,entity,layer,surface_name,kind);
+        tag_surface(host,entity,layer,profile_key,kind);
     }
     host.bump_geometry();
     host.set_dirty();
@@ -2740,5 +2740,8 @@ fn profile_from_alignment_command(host:&mut dyn HostApi,cmd:&str) {
         host.push_error("LS_PROFILE_FROM_ALIGNMENT: more than 5000 stations; increase spacing");return;
     }
     host.push_info(&format!("LS_PROFILE_FROM_ALIGNMENT: {} alignment vertices, length {:.3} m",xy.len(),profile.length));
-    draw_sampled_profile(host,args[0],profile,nums[1],nums[2],scale);
+    // Separate chart identity per surface + alignment layer, retained in DWG XDATA.
+    // Legacy LS_PROFILE diagrams keep their original surface-only key.
+    let profile_key=format!("PROFILE::{}::{}",args[0].to_ascii_uppercase(),args[1].to_ascii_uppercase());
+    draw_sampled_profile(host,args[0],&profile_key,profile,nums[1],nums[2],scale);
 }
