@@ -89,6 +89,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             profile_draw_command(host, cmd);
             true
         }
+        "LS_PROFILE_GRADE" => {
+            profile_grade_command(host, cmd);
+            true
+        }
         "LS_PROFILE_FROM_ALIGNMENT" => {
             profile_from_alignment_command(host, cmd);
             true
@@ -2744,4 +2748,104 @@ fn profile_from_alignment_command(host:&mut dyn HostApi,cmd:&str) {
     // Legacy LS_PROFILE diagrams keep their original surface-only key.
     let profile_key=format!("PROFILE::{}::{}",args[0].to_ascii_uppercase(),args[1].to_ascii_uppercase());
     draw_sampled_profile(host,args[0],&profile_key,profile,nums[1],nums[2],scale);
+}
+
+
+/// Draw a design-grade overlay on an existing named alignment profile.
+/// Uses the identical surface+alignment XDATA key, but distinct grade kinds and
+/// layers, so a grade update does not remove the terrain chart.
+fn profile_grade_command(host: &mut dyn HostApi, cmd: &str) {
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.len() != 8 {
+        host.push_info("Usage: LS_PROFILE_GRADE <surface> <alignment-layer> <spacing> <chart-x> <chart-y> <vertical-scale> <initial-z> <slope-percent>");
+        return;
+    }
+    let mut nums=Vec::with_capacity(6);
+    for token in &args[2..] {
+        match token.parse::<f64>() {
+            Ok(n) if n.is_finite() => nums.push(n),
+            _ => {host.push_error("LS_PROFILE_GRADE: all numeric arguments must be finite");return;}
+        }
+    }
+    let (spacing,chart_x,chart_y,vertical_scale,initial_z,slope_percent)
+        =(nums[0],nums[1],nums[2],nums[3],nums[4],nums[5]);
+    if spacing<=0.0 || vertical_scale<=0.0 {
+        host.push_error("LS_PROFILE_GRADE: spacing and vertical scale must be positive");return;
+    }
+    let key=format!("PROFILE::{}::{}",args[0].to_ascii_uppercase(),args[1].to_ascii_uppercase());
+    let existing=host.document().entities().any(|entity|
+        matches!(entity,EntityType::Line(_))
+        && entity.common().layer=="LS-PROFILE-GROUND"
+        && surface_tag(entity).is_some_and(|(name,kind)|
+            name.eq_ignore_ascii_case(&key) && kind=="PROFILE_LINE"));
+    if !existing {
+        host.push_error("LS_PROFILE_GRADE: first create the terrain chart with LS_PROFILE_FROM_ALIGNMENT");return;
+    }
+    let alignment_entities: Vec<_> = host.document().entities().filter_map(|e| {
+        if !e.common().layer.eq_ignore_ascii_case(args[1]) {return None;}
+        match e {EntityType::LwPolyline(p)=>Some(p),_=>None}
+    }).collect();
+    if alignment_entities.len()!=1 {
+        host.push_error("LS_PROFILE_GRADE: expected exactly one LWPolyline in the alignment layer");return;
+    }
+    let a=alignment_entities[0];
+    if a.is_closed || a.vertices.len()<2 || a.vertices.iter().any(|v|
+        !v.bulge.is_finite() || v.bulge.abs()>1e-10) {
+        host.push_error("LS_PROFILE_GRADE: only open, straight-segment polylines are supported");return;
+    }
+    let alignment:Vec<[f64;2]>=a.vertices.iter().map(|v|[v.location.x,v.location.y]).collect();
+    let surface=match resolve_named_surface(host,args[0]) {
+        Ok(s)=>s,Err(e)=>{host.push_error(&format!("LS_PROFILE_GRADE: {e}"));return;}
+    };
+    let profile=match landsurvey::profile::sample_longitudinal(&surface,&alignment,spacing) {
+        Ok(p)=>p,Err(e)=>{host.push_error(&format!("LS_PROFILE_GRADE: {e}"));return;}
+    };
+    if profile.samples.len()>5000 {
+        host.push_error("LS_PROFILE_GRADE: more than 5000 stations");return;
+    }
+    let datum=match profile.samples.iter().filter_map(|s|s.elevation).reduce(f64::min) {
+        Some(z)=>z.floor(),
+        None=>{host.push_error("LS_PROFILE_GRADE: no stations within the TIN");return;}
+    };
+    let grades=match landsurvey::profile::constant_grade(&profile,initial_z,slope_percent) {
+        Ok(g)=>g,Err(e)=>{host.push_error(&format!("LS_PROFILE_GRADE: {e}"));return;}
+    };
+    if grades.len()<2 {host.push_error("LS_PROFILE_GRADE: too few grade points");return;}
+    let old:Vec<codec::Handle>=host.document().entities().filter_map(|e|{
+        let (name,kind)=surface_tag(e)?;
+        if !name.eq_ignore_ascii_case(&key) {return None;}
+        match (kind,e.common().layer.as_str(),e) {
+            ("PROFILE_GRADE","LS-PROFILE-GRADE",EntityType::Line(_))
+            |("PROFILE_GRADE_LABEL","LS-PROFILE-GRADE-LABEL",EntityType::Text(_))
+                =>Some(e.common().handle),
+            _=>None,
+        }
+    }).collect();
+    let pt=|station:f64,z:f64|Vector3::new(chart_x+station,chart_y+(z-datum)*vertical_scale,0.0);
+    let mut generated:Vec<(EntityType,&'static str,&'static str)>=Vec::new();
+    for pair in grades.windows(2) {
+        let mut e=EntityType::Line(Line::from_points(
+            pt(pair[0].station,pair[0].design_z),pt(pair[1].station,pair[1].design_z)));
+        e.common_mut().color=Color::from_index(1);
+        generated.push((e,"LS-PROFILE-GRADE","PROFILE_GRADE"));
+    }
+    let height=(profile.length/90.0).clamp(0.4,2.5);
+    for g in [grades.first().unwrap(),grades.last().unwrap()] {
+        let msg=format!("RASANTE {0:.1}m: Z {1:.2}",g.station,g.design_z);
+        let mut ent=EntityType::Text(Text::with_value(msg,
+            pt(g.station,g.design_z+height*1.5/vertical_scale)).with_height(height*0.75));
+        ent.common_mut().color=Color::from_index(1);
+        generated.push((ent,"LS-PROFILE-GRADE-LABEL","PROFILE_GRADE_LABEL"));
+    }
+    host.push_undo("LS_PROFILE_GRADE");
+    let removed=old.iter().filter(|&&h|host.remove_entity(h)).count();
+    for (entity,layer,kind) in generated.iter().cloned() {
+        tag_surface(host,entity,layer,&key,kind);
+    }
+    host.bump_geometry();
+    host.set_dirty();
+    let fill=grades.iter().filter(|g|g.design_minus_terrain.is_some_and(|d|d>0.0)).count();
+    let cut=grades.iter().filter(|g|g.design_minus_terrain.is_some_and(|d|d<0.0)).count();
+    host.push_output(&format!("LS_PROFILE_GRADE: {} stations, start Z {:.2}, grade {:+.3}%, {} potential fill stations, {} potential cut stations; {} grade entities replaced, {} created. No volume computed.",
+        grades.len(),initial_z,slope_percent,fill,cut,removed,generated.len()));
 }
