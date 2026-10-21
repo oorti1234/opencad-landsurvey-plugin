@@ -117,3 +117,97 @@ mod tests {
         assert!(sample_longitudinal(&planar(), &[[0.0,0.0],[2.0,0.0]], 1e-9).is_err());
     }
 }
+
+
+/// Design-grade elevation and signed difference at each terrain profile station.
+/// Positive difference means planned fill; negative means planned cut.
+/// These are vertical differences, NOT earthwork volumes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradeSample {
+    pub station: f64,
+    pub terrain_z: Option<f64>,
+    pub design_z: f64,
+    pub design_minus_terrain: Option<f64>,
+}
+
+/// Evaluate a constant longitudinal slope in percent from the first station.
+/// The design equation is Z(s) = initial_z + s * slope_percent / 100.
+pub fn constant_grade(
+    profile: &LongitudinalProfile,
+    initial_z: f64,
+    slope_percent: f64,
+) -> Result<Vec<GradeSample>, String> {
+    if !initial_z.is_finite() || !slope_percent.is_finite() {
+        return Err("Grade elevation and slope must be finite".into());
+    }
+    if !profile.length.is_finite() || profile.length < 0.0 {
+        return Err("Invalid profile length".into());
+    }
+    let mut last_station = -1.0;
+    let mut result = Vec::with_capacity(profile.samples.len());
+    for sample in &profile.samples {
+        if !sample.station.is_finite() || sample.station < 0.0
+            || sample.station > profile.length + 1e-8 || sample.station <= last_station {
+            return Err("Invalid or unordered profile station".into());
+        }
+        last_station = sample.station;
+        let design_z = initial_z + sample.station * (slope_percent / 100.0);
+        if !design_z.is_finite() {
+            return Err("Grade elevation overflow".into());
+        }
+        let difference = match sample.elevation {
+            Some(z) if z.is_finite() => Some(design_z - z),
+            Some(_) => return Err("Invalid terrain elevation".into()),
+            None => None,
+        };
+        result.push(GradeSample {
+            station: sample.station,
+            terrain_z: sample.elevation,
+            design_z,
+            design_minus_terrain: difference,
+        });
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod grade_tests {
+    use super::*;
+
+    #[test]
+    fn rise_and_signed_cut_fill_are_consistent() {
+        let ground = sample_longitudinal(
+            &Surface { nodes: vec![[0.,0.,100.],[10.,0.,110.],[0.,10.,100.]],
+                triangles: vec![[0,1,2]] },
+            &[[0.,0.],[10.,0.]], 5.).unwrap();
+        let values = constant_grade(&ground, 102., 20.).unwrap();
+        assert_eq!(values.len(), 3);
+        assert!((values[0].design_minus_terrain.unwrap()-2.).abs()<1e-9);
+        assert!((values[1].design_z-112.).abs()<1e-9);
+        assert!((values[1].design_minus_terrain.unwrap()-7.).abs()<1e-9);
+        assert!((values[2].design_minus_terrain.unwrap()-12.).abs()<1e-9);
+    }
+
+    #[test]
+    fn falling_grade_and_missing_terrain() {
+        let p = LongitudinalProfile { length:10., outside_count:1,
+            samples:vec![
+                ProfileSample{station:0.,x:0.,y:0.,elevation:Some(104.)},
+                ProfileSample{station:5.,x:5.,y:0.,elevation:None},
+                ProfileSample{station:10.,x:10.,y:0.,elevation:Some(102.)}
+            ]};
+        let grade=constant_grade(&p, 103., -10.).unwrap();
+        assert_eq!(grade[0].design_minus_terrain, Some(-1.));
+        assert_eq!(grade[1].design_minus_terrain,None);
+        assert_eq!(grade[2].design_minus_terrain,Some(0.));
+    }
+
+    #[test]
+    fn rejects_invalid_input() {
+        let p=LongitudinalProfile { length:5.,outside_count:0,samples:vec![
+            ProfileSample{station:0.,x:0.,y:0.,elevation:Some(100.)}
+        ]};
+        assert!(constant_grade(&p,f64::NAN,1.).is_err());
+        assert!(constant_grade(&p,100.,f64::INFINITY).is_err());
+    }
+}
