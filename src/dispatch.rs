@@ -2531,9 +2531,6 @@ fn profile_draw_command(host: &mut dyn HostApi, cmd: &str) {
         point(0.0,datum),point(profile.length,datum)
     )),"LS-PROFILE-AXIS","PROFILE_AXIS"));
     let txt_height=(profile.length/90.0).clamp(0.4,2.5);
-    let label=|value:String,station:f64,z:f64|EntityType::Text(
-        Text::with_value(value,point(station,z)).with_height(txt_height)
-    );
     // Grid + banded station table. Limit labelling to approximately 10 columns
     // to avoid the overlap present in the first graphical prototype.
     let z_max=profile.samples.iter().filter_map(|s|s.elevation)
