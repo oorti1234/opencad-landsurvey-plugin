@@ -183,9 +183,9 @@ mod grade_tests {
         let values = constant_grade(&ground, 102., 20.).unwrap();
         assert_eq!(values.len(), 3);
         assert!((values[0].design_minus_terrain.unwrap()-2.).abs()<1e-9);
-        assert!((values[1].design_z-112.).abs()<1e-9);
-        assert!((values[1].design_minus_terrain.unwrap()-7.).abs()<1e-9);
-        assert!((values[2].design_minus_terrain.unwrap()-12.).abs()<1e-9);
+        assert!((values[1].design_z-103.).abs()<1e-9);
+        assert!((values[1].design_minus_terrain.unwrap()+2.).abs()<1e-9);
+        assert!((values[2].design_minus_terrain.unwrap()+6.).abs()<1e-9);
     }
 
     #[test]
