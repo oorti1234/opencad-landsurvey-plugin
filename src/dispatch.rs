@@ -5272,6 +5272,33 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn contours_survive_dwg_roundtrip_with_3d_geometry_and_xdata() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        let originals: Vec<(&str, &str)> = host.doc.entities()
+            .filter_map(|entity| match entity {
+                EntityType::Polyline3D(_) => surface_tag(entity)
+                    .filter(|(_, kind)| *kind == "CONTOUR"),
+                _ => None,
+            }).collect();
+        assert!(!originals.is_empty(), "no contours generated");
+        register_ls_app_ids(&mut host.doc);
+        let dwg = DwgWriter::write_to_vec(&host.doc).expect("write DWG");
+        let reopened = DwgReader::from_stream(Cursor::new(dwg))
+            .read().expect("read DWG");
+        let restored: Vec<(&str, &str)> = reopened.entities()
+            .filter_map(|entity| match entity {
+                EntityType::Polyline3D(_) => surface_tag(entity)
+                    .filter(|(_, kind)| *kind == "CONTOUR"),
+                _ => None,
+            }).collect();
+        assert_eq!(restored.len(), originals.len(), "missing 3D contours after DWG roundtrip");
+        assert!(restored.iter().all(|&(name, kind)|
+            name == "CONTOUR-TEST" && kind == "CONTOUR"));
+    }
+
+    #[test]
     fn invalid_contour_arguments_do_not_change_drawing() {
         let mut host = TestHost::new();
         host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
