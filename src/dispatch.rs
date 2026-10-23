@@ -1829,6 +1829,14 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
         host.push_info("LS_CONTOURS: no contours at the requested intervals.");
         return;
     }
+    // Keep existing contours until the complete replacement batch succeeds.
+    // Never erase a different surface's contours or the underlying TIN.
+    let old_handles: Vec<_> = host.document().entities()
+        .filter(|e| matches!(e, EntityType::Polyline3D(_))
+            && surface_tag(e).is_some_and(|(name, kind)|
+                name.eq_ignore_ascii_case(args[0]) && kind == "CONTOUR"))
+        .map(|e| e.common().handle)
+        .collect();
     host.push_undo("LS_CONTOURS");
     let mut batch = Batch::new();
     for (entity, layer, elevation) in polylines {
@@ -1838,12 +1846,18 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
     }
     let queued = batch.len();
     let accepted = batch.commit(host);
-    if accepted > 0 {
+    if accepted != queued {
+        host.push_error("LS_CONTOURS: incomplete batch; previous contours were preserved. New partial entities may need cleanup.");
+    }
+    let removed = if accepted == queued {
+        old_handles.iter().filter(|&&h| host.remove_entity(h)).count()
+    } else { 0 };
+    if accepted > 0 || removed > 0 {
         host.bump_geometry();
         host.set_dirty();
     }
     host.push_output(&format!(
-        "LS_CONTOURS: created {accepted} of {queued} contour polylines."
+        "LS_CONTOURS: created {accepted} of {queued} polylines, replaced {removed} previous contours."
     ));
 }
 
