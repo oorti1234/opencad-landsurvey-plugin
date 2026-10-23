@@ -153,6 +153,10 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
             export_landxml(host, cmd);
             true
         }
+        "LS_CONTOURS" => {
+            draw_contours(host, cmd);
+            true
+        }
         "LS_DATUM" => {
             datum_volume(host, cmd);
             true
@@ -1749,6 +1753,100 @@ fn surface_from_mesh(mesh: &Mesh) -> Surface {
 
 /// `LS_DATUM <surface> <elevation>` — cut/fill of one surface against a
 /// horizontal plane. Draws the TIN, the datum contour, and a result label.
+/// Generate connected TIN contour polylines with the existing Surface datum
+/// slicer and bulk entity insertion. Ambiguous saddle junctions are rejected
+/// before writing anything so an incorrect topology is never drawn silently.
+fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
+    use landsurvey::{contour_chains::stitch_segments, contours::segments_at_level};
+    const USAGE: &str =
+        "Usage: LS_CONTOURS <surface-name> [minor-interval=0.5] [major-every=5]";
+    let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    if args.is_empty() || args.len() > 3 {
+        host.push_info(USAGE);
+        return;
+    }
+    let minor = match args.get(1).unwrap_or(&"0.5").parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => v,
+        _ => { host.push_error(USAGE); return; }
+    };
+    let major_every = match args.get(2).unwrap_or(&"5").parse::<usize>() {
+        Ok(v) if v > 0 => v,
+        _ => { host.push_error(USAGE); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(s) => s,
+        Err(e) => { host.push_error(&format!("LS_CONTOURS: {e}")); return; }
+    };
+    let (mut min_z, mut max_z) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in &surface.nodes {
+        if p[2].is_finite() {
+            min_z = min_z.min(p[2]);
+            max_z = max_z.max(p[2]);
+        }
+    }
+    if !min_z.is_finite() || !max_z.is_finite() {
+        host.push_error("LS_CONTOURS: no finite elevations.");
+        return;
+    }
+    let first = (min_z / minor).ceil();
+    let last = (max_z / minor).floor();
+    if !first.is_finite() || !last.is_finite() || last - first > 10_000.0 {
+        host.push_error("LS_CONTOURS: invalid or excessive number of levels (limit 10000).");
+        return;
+    }
+    // Fully prepare before modifying the drawing. Large datasets can still
+    // require a separate performance limit or asynchronous host API.
+    let mut polylines = Vec::<(EntityType, &'static str, f64)>::new();
+    let tolerance = minor.min(1.0) * 1e-6;
+    if first <= last {
+        for k in (first as i64)..=(last as i64) {
+            let elevation = k as f64 * minor;
+            let segments = segments_at_level(&surface, elevation);
+            let chains = match stitch_segments(&segments, tolerance) {
+                Ok(c) => c,
+                Err(err) => {
+                    host.push_error(&format!(
+                        "LS_CONTOURS: level {elevation} has ambiguous geometry: {err:?}"
+                    ));
+                    return;
+                }
+            };
+            for chain in chains {
+                if chain.points.len() < 2 { continue; }
+                let mut pl = Polyline3D::from_points(chain.points.iter()
+                    .map(|p| Vector3::new(p[0], p[1], elevation)).collect());
+                pl.flags.closed = chain.closed;
+                let layer = if k.rem_euclid(major_every as i64) == 0 {
+                    "LS-CONTOUR-MAJ"
+                } else {
+                    "LS-CONTOUR-MIN"
+                };
+                polylines.push((EntityType::Polyline3D(pl), layer, elevation));
+            }
+        }
+    }
+    if polylines.is_empty() {
+        host.push_info("LS_CONTOURS: no contours at the requested intervals.");
+        return;
+    }
+    host.push_undo("LS_CONTOURS");
+    let mut batch = Batch::new();
+    for (entity, layer, elevation) in polylines {
+        let mut record = surface_record(args[0], "CONTOUR");
+        record.add_value(XDataValue::Real(elevation));
+        batch.add_tagged(entity, layer, record);
+    }
+    let queued = batch.len();
+    let accepted = batch.commit(host);
+    if accepted > 0 {
+        host.bump_geometry();
+        host.set_dirty();
+    }
+    host.push_output(&format!(
+        "LS_CONTOURS: created {accepted} of {queued} contour polylines."
+    ));
+}
+
 fn datum_volume(host: &mut dyn HostApi, cmd: &str) {
     let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
     if args.len() < 2 {
