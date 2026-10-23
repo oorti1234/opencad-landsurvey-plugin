@@ -84,6 +84,31 @@ mod tests {
             "analytic reference: total contour length must be 2");
     }
 
+    /// Analytic end-to-end reference across a shared TIN edge:
+    /// the contour x=1 joins two triangle segments into one open polyline,
+    /// with three vertices and total length exactly 2.
+    #[test]
+    fn planar_slope_stitches_into_one_analytic_contour() {
+        use crate::contour_chains::stitch_segments;
+        let surface = Surface {
+            nodes: vec![
+                [0., 0., 0.], [2., 0., 2.],
+                [0., 2., 0.], [2., 2., 2.],
+            ],
+            triangles: vec![[0, 1, 2], [1, 3, 2]],
+        };
+        let segments = segments_at_level(&surface, 1.);
+        let chains = stitch_segments(&segments, 1e-8).expect("planar slope is unambiguous");
+        assert_eq!(chains.len(), 1);
+        assert!(!chains[0].closed);
+        assert_eq!(chains[0].points.len(), 3);
+        assert!(chains[0].points.iter().all(|p| (p[0] - 1.).abs() < 1e-10));
+        let length: f64 = chains[0].points.windows(2)
+            .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
+            .sum();
+        assert!((length - 2.).abs() < 1e-10);
+    }
+
     /// Translation in Easting/Northing and a constant vertical offset must
     /// translate the contour without changing the total geometry length.
     #[test]
