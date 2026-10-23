@@ -5250,6 +5250,38 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
         assert_eq!(surf.triangles, sample_surface().triangles);
     }
 
+    #[test]
+    fn contours_command_draws_batched_3d_polylines_with_surface_tags() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        let lines: Vec<&EntityType> = host.doc.entities()
+            .filter(|e| matches!(e, EntityType::Polyline3D(_))
+                && surface_tag(e).is_some_and(|(_, kind)| kind == "CONTOUR"))
+            .collect();
+        assert!(!lines.is_empty(), "expected 3D contour polylines");
+        assert_eq!(host.single_adds, 0, "must not add contours one-by-one");
+        assert!(host.bulk_adds >= 1, "must use Batch::commit");
+        for line in lines {
+            let (name, kind) = surface_tag(line).unwrap();
+            assert_eq!(name, "CONTOUR-TEST");
+            assert_eq!(kind, "CONTOUR");
+            assert!(matches!(line.common().layer.as_str(),
+                "LS-CONTOUR-MAJ" | "LS-CONTOUR-MIN"));
+        }
+    }
+
+    #[test]
+    fn invalid_contour_arguments_do_not_change_drawing() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        let before = host.doc.entities().count();
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0 5");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 0");
+        assert_eq!(host.doc.entities().count(), before);
+        assert_eq!(host.bulk_adds, 0);
+    }
+
     // ── #58 / #60 / #61: inverse by point, PNEZD export, point creation ──
 
     /// A drawing holding the five #38 points, imported with LS_PNEZD (labels
