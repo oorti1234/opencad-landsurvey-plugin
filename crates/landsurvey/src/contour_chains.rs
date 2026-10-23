@@ -146,6 +146,29 @@ mod tests {
     }
 
     #[test]
+    fn four_arm_saddle_is_reported_instead_of_cross_connected() {
+        let edges = [
+            segment([-1., 0.], [0., 0.]),
+            segment([0., 0.], [1., 0.]),
+            segment([0., -1.], [0., 0.]),
+            segment([0., 0.], [0., 1.]),
+        ];
+        assert_eq!(
+            stitch_segments(&edges, 1e-8),
+            Err(ChainError::Branch { elevation: 10., degree: 4 })
+        );
+    }
+
+    #[test]
+    fn mismatched_elevation_is_rejected() {
+        let edges = [
+            segment([0., 0.], [1., 0.]),
+            ContourSegment { elevation: 11., start: [1., 0.], end: [2., 0.] },
+        ];
+        assert_eq!(stitch_segments(&edges, 1e-8), Err(ChainError::InvalidSegment));
+    }
+
+    #[test]
     fn invalid_input_is_rejected() {
         assert_eq!(stitch_segments(&[], 0.), Err(ChainError::InvalidTolerance));
         assert_eq!(stitch_segments(&[segment([0.,0.],[0.,0.])], 1e-6),
