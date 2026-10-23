@@ -1837,6 +1837,11 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
                 name.eq_ignore_ascii_case(args[0]) && kind == "CONTOUR"))
         .map(|e| e.common().handle)
         .collect();
+    // Snapshot all handles before insert so a partially accepted batch can
+    // be rolled back without touching pre-existing contours or other entities.
+    let before: std::collections::HashSet<_> = host.document().entities()
+        .map(|entity| entity.common().handle)
+        .collect();
     host.push_undo("LS_CONTOURS");
     let mut batch = Batch::new();
     for (entity, layer, elevation) in polylines {
@@ -1847,7 +1852,19 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
     let queued = batch.len();
     let accepted = batch.commit(host);
     if accepted != queued {
-        host.push_error("LS_CONTOURS: incomplete batch; previous contours were preserved. New partial entities may need cleanup.");
+        let partial_handles: Vec<_> = host.document().entities()
+            .filter(|entity| !before.contains(&entity.common().handle))
+            .filter(|entity| matches!(entity, EntityType::Polyline3D(_))
+                && surface_tag(entity).is_some_and(|(name, kind)|
+                    name.eq_ignore_ascii_case(args[0]) && kind == "CONTOUR"))
+            .map(|entity| entity.common().handle)
+            .collect();
+        let removed_partial = partial_handles.iter()
+            .filter(|&&handle| host.remove_entity(handle)).count();
+        host.push_error(&format!(
+            "LS_CONTOURS: incomplete batch ({accepted}/{queued}); preserved previous contours and removed {removed_partial}/{} partial new contours.",
+            partial_handles.len()
+        ));
     }
     let removed = if accepted == queued {
         old_handles.iter().filter(|&&h| host.remove_entity(h)).count()
