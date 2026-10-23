@@ -154,6 +154,40 @@ mod tests {
         ), "ambiguous four-arm saddle must be rejected, not cross-connected");
     }
 
+    /// Moving the contour off an exact saddle must give ordinary,
+    /// unambiguous paths rather than a spurious four-way intersection.
+    /// The piecewise-linear surface has z=+1 on E/W and z=-1 on N/S.
+    /// Above the saddle, isolines occur in the east and west wedges;
+    /// below it, they occur in the north and south wedges.
+    #[test]
+    fn saddle_offset_levels_form_two_separate_open_chains() {
+        use crate::contour_chains::stitch_segments;
+        let surface = Surface {
+            nodes: vec![
+                [0., 0., 0.], [1., 0., 1.], [0., 1., -1.],
+                [-1., 0., 1.], [0., -1., -1.],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]],
+        };
+        for (level, on_east_west) in [(0.25, true), (-0.25, false)] {
+            let segments = segments_at_level(&surface, level);
+            let chains = stitch_segments(&segments, 1e-9)
+                .expect("off-saddle isolines must be unambiguous");
+            assert_eq!(chains.len(), 2, "expected two disconnected branches");
+            assert!(chains.iter().all(|c| !c.closed && c.points.len() >= 2));
+            for chain in &chains {
+                let midpoint = chain.points[chain.points.len() / 2];
+                if on_east_west {
+                    assert!(midpoint[0].abs() > 1e-8,
+                        "positive-level branches belong to east/west wedges");
+                } else {
+                    assert!(midpoint[1].abs() > 1e-8,
+                        "negative-level branches belong to north/south wedges");
+                }
+            }
+        }
+    }
+
     #[test]
     fn out_of_range_and_invalid_levels_are_empty() {
         let surface = Surface {
