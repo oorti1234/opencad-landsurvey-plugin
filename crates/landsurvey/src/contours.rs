@@ -130,6 +130,30 @@ mod tests {
             [s.start, s.end].iter().all(|p| (p[0] - 501.).abs() < 1e-10)));
     }
 
+    /// A true TIN saddle: four facets meet at a vertex exactly at level zero,
+    /// with alternating positive and negative surrounding vertices.
+    /// Do not guess how its four branches should connect.
+    #[test]
+    fn exact_vertex_saddle_is_not_silently_cross_connected() {
+        use crate::contour_chains::{stitch_segments, ChainError};
+        let surface = Surface {
+            nodes: vec![
+                [0., 0., 0.],
+                [1., 0., 1.],
+                [0., 1., -1.],
+                [-1., 0., 1.],
+                [0., -1., -1.],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]],
+        };
+        let segments = segments_at_level(&surface, 0.);
+        assert!(!segments.is_empty(), "saddle must produce nontrivial contour arms");
+        assert!(matches!(
+            stitch_segments(&segments, 1e-9),
+            Err(ChainError::Branch { degree: 4, .. })
+        ), "ambiguous four-arm saddle must be rejected, not cross-connected");
+    }
+
     #[test]
     fn out_of_range_and_invalid_levels_are_empty() {
         let surface = Surface {
