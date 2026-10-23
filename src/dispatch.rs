@@ -5366,6 +5366,24 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn contour_elevation_labels_are_batched_and_regenerated() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        let label_count = |h: &TestHost| h.doc.entities()
+            .filter(|e| matches!(e, EntityType::Text(_))
+                && e.common().layer == "LS-CONTOUR-LABEL"
+                && surface_tag(e).is_some_and(|(name, kind)|
+                    name == "CONTOUR-TEST" && kind == "CONTOUR"))
+            .count();
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 1");
+        let first = label_count(&host);
+        assert!(first > 0, "major contours should have elevation labels");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 1");
+        assert_eq!(label_count(&host), first, "rerun must not duplicate labels");
+        assert_eq!(host.single_adds, 0, "labels must be batched");
+    }
+
+    #[test]
     fn contours_failed_batch_preserves_existing_curves() {
         let mut host = TestHost::new();
         host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
