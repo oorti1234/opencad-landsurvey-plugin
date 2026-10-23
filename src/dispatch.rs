@@ -1797,6 +1797,9 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
     // Fully prepare before modifying the drawing. Large datasets can still
     // require a separate performance limit or asynchronous host API.
     let mut polylines = Vec::<(EntityType, &'static str, f64)>::new();
+    let mut labels = Vec::<(EntityType, f64)>::new();
+    let (minx, maxx, miny, maxy) = surface.extent();
+    let label_height = ((maxx - minx).max(maxy - miny) / 250.0).max(0.5);
     let tolerance = minor.min(1.0) * 1e-6;
     if first <= last {
         for k in (first as i64)..=(last as i64) {
@@ -1821,6 +1824,16 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
                 } else {
                     "LS-CONTOUR-MIN"
                 };
+                // Label major chains at their midpoint, without altering the
+                // contour geometry. Labels are in the same replacement batch.
+                if layer == "LS-CONTOUR-MAJ" {
+                    let midpoint = chain.points[chain.points.len() / 2];
+                    let label = Text::with_value(
+                        format!("{elevation:.2}"),
+                        Vector3::new(midpoint[0], midpoint[1], elevation),
+                    ).with_height(label_height);
+                    labels.push((EntityType::Text(label), elevation));
+                }
                 polylines.push((EntityType::Polyline3D(pl), layer, elevation));
             }
         }
@@ -1832,7 +1845,8 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
     // Keep existing contours until the complete replacement batch succeeds.
     // Never erase a different surface's contours or the underlying TIN.
     let old_handles: Vec<_> = host.document().entities()
-        .filter(|e| matches!(e, EntityType::Polyline3D(_))
+        .filter(|e| matches!(e, EntityType::Polyline3D(_) | EntityType::Text(_))
+            && matches!(e.common().layer.as_str(), "LS-CONTOUR-MAJ" | "LS-CONTOUR-MIN" | "LS-CONTOUR-LABEL")
             && surface_tag(e).is_some_and(|(name, kind)|
                 name.eq_ignore_ascii_case(args[0]) && kind == "CONTOUR"))
         .map(|e| e.common().handle)
@@ -1849,12 +1863,18 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
         record.add_value(XDataValue::Real(elevation));
         batch.add_tagged(entity, layer, record);
     }
+    for (entity, elevation) in labels {
+        let mut record = surface_record(args[0], "CONTOUR");
+        record.add_value(XDataValue::Real(elevation));
+        batch.add_tagged(entity, "LS-CONTOUR-LABEL", record);
+    }
     let queued = batch.len();
     let accepted = batch.commit(host);
     if accepted != queued {
         let partial_handles: Vec<_> = host.document().entities()
             .filter(|entity| !before.contains(&entity.common().handle))
-            .filter(|entity| matches!(entity, EntityType::Polyline3D(_))
+            .filter(|entity| matches!(entity, EntityType::Polyline3D(_) | EntityType::Text(_))
+                && matches!(entity.common().layer.as_str(), "LS-CONTOUR-MAJ" | "LS-CONTOUR-MIN" | "LS-CONTOUR-LABEL")
                 && surface_tag(entity).is_some_and(|(name, kind)|
                     name.eq_ignore_ascii_case(args[0]) && kind == "CONTOUR"))
             .map(|entity| entity.common().handle)
@@ -1874,7 +1894,7 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
         host.set_dirty();
     }
     host.push_output(&format!(
-        "LS_CONTOURS: created {accepted} of {queued} polylines, replaced {removed} previous contours."
+        "LS_CONTOURS: created {accepted} of {queued} contour entities (polylines and labels), replaced {removed} previous contour entities."
     ));
 }
 
