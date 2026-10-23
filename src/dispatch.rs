@@ -1770,7 +1770,7 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
         _ => { host.push_error(USAGE); return; }
     };
     let major_every = match args.get(2).unwrap_or(&"5").parse::<usize>() {
-        Ok(v) if v > 0 => v,
+        Ok(v) if v > 0 && v <= i64::MAX as usize => v,
         _ => { host.push_error(USAGE); return; }
     };
     let surface = match resolve_named_surface(host, args[0]) {
@@ -1790,7 +1790,10 @@ fn draw_contours(host: &mut dyn HostApi, cmd: &str) {
     }
     let first = (min_z / minor).ceil();
     let last = (max_z / minor).floor();
-    if !first.is_finite() || !last.is_finite() || last - first > 10_000.0 {
+    if !first.is_finite() || !last.is_finite()
+        || first < i64::MIN as f64 || first >= i64::MAX as f64
+        || last < i64::MIN as f64 || last >= i64::MAX as f64
+        || last - first > 10_000.0 {
         host.push_error("LS_CONTOURS: invalid or excessive number of levels (limit 10000).");
         return;
     }
