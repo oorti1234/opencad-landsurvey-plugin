@@ -5311,6 +5311,24 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn contours_regenerate_without_duplicates() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        let count = |host: &TestHost| host.doc.entities()
+            .filter(|e| matches!(e, EntityType::Polyline3D(_))
+                && surface_tag(e).is_some_and(|(name, kind)|
+                    name == "CONTOUR-TEST" && kind == "CONTOUR"))
+            .count();
+        let first = count(&host);
+        assert!(first > 0);
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        assert_eq!(count(&host), first, "regeneration must replace old contours");
+        assert_eq!(host.single_adds, 0);
+        assert!(host.bulk_adds >= 2);
+    }
+
+    #[test]
     fn invalid_contour_arguments_do_not_change_drawing() {
         let mut host = TestHost::new();
         host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
