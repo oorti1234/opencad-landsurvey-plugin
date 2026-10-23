@@ -5346,6 +5346,24 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn contours_failed_batch_preserves_existing_curves() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        let count = |host: &TestHost| host.doc.entities()
+            .filter(|e| matches!(e, EntityType::Polyline3D(_))
+                && surface_tag(e).is_some_and(|(name, kind)|
+                    name == "CONTOUR-TEST" && kind == "CONTOUR"))
+            .count();
+        let original = count(&host);
+        assert!(original > 0);
+        host.bulk_limit = Some(host.bulk_adds);
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 5");
+        assert_eq!(count(&host), original, "refused batch must preserve old contours");
+        assert!(host.log.iter().any(|message| message.contains("incomplete batch")));
+    }
+
+    #[test]
     fn invalid_contour_arguments_do_not_change_drawing() {
         let mut host = TestHost::new();
         host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
