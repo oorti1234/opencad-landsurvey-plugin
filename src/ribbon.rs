@@ -168,6 +168,13 @@ impl CadModule for LandSurveyModule {
                         icon: IconKind::Glyph("\u{21E5}"), // ⇥ (export)
                         event: ModuleEvent::Command("LS_LANDXMLOUT".to_string()),
                     }),
+                    // Command-line arguments select a named surface and intervals.
+                    RibbonItem::LargeTool(ToolDef {
+                        id: "LS_CONTOURS",
+                        label: "Contours",
+                        icon: IconKind::Glyph("\u{224B}"), // ≋ elevation lines
+                        event: ModuleEvent::Command("LS_CONTOURS".to_string()),
+                    }),
                     // Clicking prints usage; the user then types
                     // `LS_VOLUME <top.csv> <bottom.csv> [grid_step] [draw]`.
                     RibbonItem::LargeTool(ToolDef {
