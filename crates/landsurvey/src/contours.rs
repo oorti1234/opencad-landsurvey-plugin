@@ -57,6 +57,54 @@ mod tests {
         assert!((ends[1][1] - 1.).abs() < 1e-10);
     }
 
+    /// Analytic reference independent of Civil 3D:
+    /// on the plane z = x a level z = 1 is the straight line
+    /// x = 1, y in [0, 2], with exact length 2 units.
+    #[test]
+    fn planar_slope_two_triangles_match_analytic_length() {
+        let surface = Surface {
+            nodes: vec![
+                [0., 0., 0.], [2., 0., 2.],
+                [0., 2., 0.], [2., 2., 2.],
+            ],
+            triangles: vec![[0, 1, 2], [1, 3, 2]],
+        };
+        let segments = segments_at_level(&surface, 1.);
+        assert_eq!(segments.len(), 2, "one segment per planar facet");
+        let mut length = 0.0;
+        for segment in segments {
+            for end in [segment.start, segment.end] {
+                assert!((end[0] - 1.).abs() < 1e-10, "x must equal contour elevation");
+                assert!(end[1] >= -1e-10 && end[1] <= 2. + 1e-10);
+            }
+            length += (segment.end[0] - segment.start[0])
+                .hypot(segment.end[1] - segment.start[1]);
+        }
+        assert!((length - 2.).abs() < 1e-10,
+            "analytic reference: total contour length must be 2");
+    }
+
+    /// Translation in Easting/Northing and a constant vertical offset must
+    /// translate the contour without changing the total geometry length.
+    #[test]
+    fn planar_slope_translation_preserves_contour_length() {
+        let surface = Surface {
+            nodes: vec![
+                [500., 1000., 20.], [502., 1000., 22.],
+                [500., 1002., 20.], [502., 1002., 22.],
+            ],
+            triangles: vec![[0, 1, 2], [1, 3, 2]],
+        };
+        let segments = segments_at_level(&surface, 21.);
+        assert_eq!(segments.len(), 2);
+        let length: f64 = segments.iter().map(|s| {
+            (s.end[0] - s.start[0]).hypot(s.end[1] - s.start[1])
+        }).sum();
+        assert!((length - 2.).abs() < 1e-10);
+        assert!(segments.iter().all(|s|
+            [s.start, s.end].iter().all(|p| (p[0] - 501.).abs() < 1e-10)));
+    }
+
     #[test]
     fn out_of_range_and_invalid_levels_are_empty() {
         let surface = Surface {
