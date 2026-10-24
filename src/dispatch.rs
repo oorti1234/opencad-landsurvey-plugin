@@ -5397,7 +5397,7 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
         ]));
         let mut foreign = foreign;
         foreign.common_mut().layer = "LS-CONTOUR-MAJ".to_string();
-        foreign.common_mut().xdata.push(surface_record("OTHER-SURFACE", "CONTOUR"));
+        foreign.common_mut().extended_data.add_record(surface_record("OTHER-SURFACE", "CONTOUR"));
         let foreign_handle = host.doc.add_entity(foreign).expect("insert unrelated contour");
         draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 1");
         assert!(host.doc.entities().any(|e| e.common().handle == foreign_handle),
