@@ -5387,6 +5387,25 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn contours_regeneration_preserves_other_surfaces() {
+        let mut host = TestHost::new();
+        host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 1");
+        let foreign = EntityType::Polyline3D(Polyline3D::from_points(vec![
+            Vector3::new(0., 0., 5.),
+            Vector3::new(1., 0., 5.),
+        ]));
+        let mut foreign = foreign;
+        foreign.common_mut().layer = "LS-CONTOUR-MAJ".to_string();
+        foreign.common_mut().xdata.push(surface_record("OTHER-SURFACE", "CONTOUR"));
+        let foreign_handle = host.doc.add_entity(foreign).expect("insert unrelated contour");
+        draw_contours(&mut host, "LS_CONTOURS CONTOUR-TEST 0.5 1");
+        assert!(host.doc.entities().any(|e| e.common().handle == foreign_handle),
+            "regenerating one surface must not remove other surfaces' contours");
+        assert_eq!(host.single_adds, 0);
+    }
+
+    #[test]
     fn contours_failed_batch_preserves_existing_curves() {
         let mut host = TestHost::new();
         host.doc = doc_with_tagged_mesh("CONTOUR-TEST");
