@@ -20,22 +20,40 @@ pub fn segments_at_level(surface: &Surface, elevation: f64) -> Vec<ContourSegmen
     if !elevation.is_finite() {
         return Vec::new();
     }
-    let triangles = surface.triangles.iter().copied().filter(|tri| {
-        if tri.iter().any(|&index| index >= surface.nodes.len()) { return false; }
-        let [a, b, c] = tri.map(|i| surface.nodes[i]);
-        if [a, b, c].iter().flatten().any(|v| !v.is_finite()) { return false; }
-        let twice_area = (b[0] - a[0]) * (c[1] - a[1])
-            - (b[1] - a[1]) * (c[0] - a[0]);
-        twice_area.is_finite() && twice_area.abs() > 1e-12
-    }).collect();
-    let clean = Surface { nodes: surface.nodes.clone(), triangles };
+    let triangles = surface
+        .triangles
+        .iter()
+        .copied()
+        .filter(|tri| {
+            if tri.iter().any(|&index| index >= surface.nodes.len()) {
+                return false;
+            }
+            let [a, b, c] = tri.map(|i| surface.nodes[i]);
+            if [a, b, c].iter().flatten().any(|v| !v.is_finite()) {
+                return false;
+            }
+            let twice_area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            twice_area.is_finite() && twice_area.abs() > 1e-12
+        })
+        .collect();
+    let clean = Surface {
+        nodes: surface.nodes.clone(),
+        triangles,
+    };
     let (_, segments) = clean.cut_fill_to_datum_detailed(elevation);
-    segments.into_iter().filter_map(|[start, end]| {
-        if start == end || [start, end].iter().flatten().any(|v| !v.is_finite()) {
-            return None;
-        }
-        Some(ContourSegment { elevation, start, end })
-    }).collect()
+    segments
+        .into_iter()
+        .filter_map(|[start, end]| {
+            if start == end || [start, end].iter().flatten().any(|v| !v.is_finite()) {
+                return None;
+            }
+            Some(ContourSegment {
+                elevation,
+                start,
+                end,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -63,10 +81,7 @@ mod tests {
     #[test]
     fn planar_slope_two_triangles_match_analytic_length() {
         let surface = Surface {
-            nodes: vec![
-                [0., 0., 0.], [2., 0., 2.],
-                [0., 2., 0.], [2., 2., 2.],
-            ],
+            nodes: vec![[0., 0., 0.], [2., 0., 2.], [0., 2., 0.], [2., 2., 2.]],
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         };
         let segments = segments_at_level(&surface, 1.);
@@ -74,14 +89,18 @@ mod tests {
         let mut length = 0.0;
         for segment in segments {
             for end in [segment.start, segment.end] {
-                assert!((end[0] - 1.).abs() < 1e-10, "x must equal contour elevation");
+                assert!(
+                    (end[0] - 1.).abs() < 1e-10,
+                    "x must equal contour elevation"
+                );
                 assert!(end[1] >= -1e-10 && end[1] <= 2. + 1e-10);
             }
-            length += (segment.end[0] - segment.start[0])
-                .hypot(segment.end[1] - segment.start[1]);
+            length += (segment.end[0] - segment.start[0]).hypot(segment.end[1] - segment.start[1]);
         }
-        assert!((length - 2.).abs() < 1e-10,
-            "analytic reference: total contour length must be 2");
+        assert!(
+            (length - 2.).abs() < 1e-10,
+            "analytic reference: total contour length must be 2"
+        );
     }
 
     /// Analytic end-to-end reference across a shared TIN edge:
@@ -91,10 +110,7 @@ mod tests {
     fn planar_slope_stitches_into_one_analytic_contour() {
         use crate::contour_chains::stitch_segments;
         let surface = Surface {
-            nodes: vec![
-                [0., 0., 0.], [2., 0., 2.],
-                [0., 2., 0.], [2., 2., 2.],
-            ],
+            nodes: vec![[0., 0., 0.], [2., 0., 2.], [0., 2., 0.], [2., 2., 2.]],
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         };
         let segments = segments_at_level(&surface, 1.);
@@ -103,7 +119,9 @@ mod tests {
         assert!(!chains[0].closed);
         assert_eq!(chains[0].points.len(), 3);
         assert!(chains[0].points.iter().all(|p| (p[0] - 1.).abs() < 1e-10));
-        let length: f64 = chains[0].points.windows(2)
+        let length: f64 = chains[0]
+            .points
+            .windows(2)
             .map(|pair| (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]))
             .sum();
         assert!((length - 2.).abs() < 1e-10);
@@ -115,19 +133,23 @@ mod tests {
     fn planar_slope_translation_preserves_contour_length() {
         let surface = Surface {
             nodes: vec![
-                [500., 1000., 20.], [502., 1000., 22.],
-                [500., 1002., 20.], [502., 1002., 22.],
+                [500., 1000., 20.],
+                [502., 1000., 22.],
+                [500., 1002., 20.],
+                [502., 1002., 22.],
             ],
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         };
         let segments = segments_at_level(&surface, 21.);
         assert_eq!(segments.len(), 2);
-        let length: f64 = segments.iter().map(|s| {
-            (s.end[0] - s.start[0]).hypot(s.end[1] - s.start[1])
-        }).sum();
+        let length: f64 = segments
+            .iter()
+            .map(|s| (s.end[0] - s.start[0]).hypot(s.end[1] - s.start[1]))
+            .sum();
         assert!((length - 2.).abs() < 1e-10);
-        assert!(segments.iter().all(|s|
-            [s.start, s.end].iter().all(|p| (p[0] - 501.).abs() < 1e-10)));
+        assert!(segments
+            .iter()
+            .all(|s| [s.start, s.end].iter().all(|p| (p[0] - 501.).abs() < 1e-10)));
     }
 
     /// A true TIN saddle: four facets meet at a vertex exactly at level zero,
@@ -147,11 +169,17 @@ mod tests {
             triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]],
         };
         let segments = segments_at_level(&surface, 0.);
-        assert!(!segments.is_empty(), "saddle must produce nontrivial contour arms");
-        assert!(matches!(
-            stitch_segments(&segments, 1e-9),
-            Err(ChainError::Branch { degree: 4, .. })
-        ), "ambiguous four-arm saddle must be rejected, not cross-connected");
+        assert!(
+            !segments.is_empty(),
+            "saddle must produce nontrivial contour arms"
+        );
+        assert!(
+            matches!(
+                stitch_segments(&segments, 1e-9),
+                Err(ChainError::Branch { degree: 4, .. })
+            ),
+            "ambiguous four-arm saddle must be rejected, not cross-connected"
+        );
     }
 
     /// Moving the contour off an exact saddle must give ordinary,
@@ -164,25 +192,32 @@ mod tests {
         use crate::contour_chains::stitch_segments;
         let surface = Surface {
             nodes: vec![
-                [0., 0., 0.], [1., 0., 1.], [0., 1., -1.],
-                [-1., 0., 1.], [0., -1., -1.],
+                [0., 0., 0.],
+                [1., 0., 1.],
+                [0., 1., -1.],
+                [-1., 0., 1.],
+                [0., -1., -1.],
             ],
             triangles: vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]],
         };
         for (level, on_east_west) in [(0.25, true), (-0.25, false)] {
             let segments = segments_at_level(&surface, level);
-            let chains = stitch_segments(&segments, 1e-9)
-                .expect("off-saddle isolines must be unambiguous");
+            let chains =
+                stitch_segments(&segments, 1e-9).expect("off-saddle isolines must be unambiguous");
             assert_eq!(chains.len(), 2, "expected two disconnected branches");
             assert!(chains.iter().all(|c| !c.closed && c.points.len() >= 2));
             for chain in &chains {
                 let midpoint = chain.points[chain.points.len() / 2];
                 if on_east_west {
-                    assert!(midpoint[0].abs() > 1e-8,
-                        "positive-level branches belong to east/west wedges");
+                    assert!(
+                        midpoint[0].abs() > 1e-8,
+                        "positive-level branches belong to east/west wedges"
+                    );
                 } else {
-                    assert!(midpoint[1].abs() > 1e-8,
-                        "negative-level branches belong to north/south wedges");
+                    assert!(
+                        midpoint[1].abs() > 1e-8,
+                        "negative-level branches belong to north/south wedges"
+                    );
                 }
             }
         }
