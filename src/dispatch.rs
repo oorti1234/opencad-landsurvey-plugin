@@ -5686,6 +5686,62 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn tin_profile_sections_survive_dwg_and_regenerate_without_duplicates() {
+        let mut host = TestHost::new();
+        tagged_test_surface(&mut host, "DWG_VIEW_REGEN_1");
+        selected_test_axis(&mut host);
+        let before_axis = host.selected[0];
+        let axis_key = format!("{before_axis:?}");
+        draw_tin_profile(&mut host, "LS_TINPROFILE DWG_VIEW_REGEN_1 1000");
+        draw_tin_sections(&mut host, "LS_TINSECTIONS DWG_VIEW_REGEN_1 4 2 2 1000");
+
+        let original_profile = tin_view_handles(host.document(), "DWG_VIEW_REGEN_1", &axis_key, true);
+        let original_sections = tin_view_handles(host.document(), "DWG_VIEW_REGEN_1", &axis_key, false);
+        assert!(!original_profile.is_empty() && !original_sections.is_empty());
+
+        register_ls_app_ids(&mut host.doc);
+        let bytes = DwgWriter::write_to_vec(&host.doc).expect("write annotated views DWG");
+        let reopened = DwgReader::from_stream(Cursor::new(bytes))
+            .read().expect("read annotated views DWG");
+
+        // Reacquire by the axis entity's persisted handle, not the original
+        // in-memory host selection.
+        assert!(matches!(reopened.get_entity(before_axis), Some(EntityType::LwPolyline(_))),
+            "source axis handle did not survive DWG save/reopen");
+        assert_eq!(
+            tin_view_handles(&reopened, "DWG_VIEW_REGEN_1", &axis_key, true).len(),
+            original_profile.len(),
+            "profile view identity (XDATA surface/kind/axis) lost in DWG"
+        );
+        assert_eq!(
+            tin_view_handles(&reopened, "DWG_VIEW_REGEN_1", &axis_key, false).len(),
+            original_sections.len(),
+            "section view identity (XDATA surface/kind/axis) lost in DWG"
+        );
+        assert!(reopened.layers.contains("LS-TIN-PROFILE"));
+        assert!(reopened.layers.contains("LS-TIN-SECTION"));
+        assert!(reopened.layers.contains("LS-TIN-ANNOTATION"));
+        assert!(reopened.layers.contains("LS-TIN-GRID"));
+
+        let mut host = TestHost::new();
+        host.doc = reopened;
+        host.selected = vec![before_axis];
+        draw_tin_profile(&mut host, "LS_TINPROFILE DWG_VIEW_REGEN_1 1000");
+        draw_tin_sections(&mut host, "LS_TINSECTIONS DWG_VIEW_REGEN_1 4 2 2 1000");
+        let profile_after = tin_view_handles(host.document(), "DWG_VIEW_REGEN_1", &axis_key, true);
+        let sections_after = tin_view_handles(host.document(), "DWG_VIEW_REGEN_1", &axis_key, false);
+        assert_eq!(profile_after.len(), original_profile.len(), "profile duplicated after DWG");
+        assert_eq!(sections_after.len(), original_sections.len(), "sections duplicated after DWG");
+        assert!(original_profile.iter().all(|h| !profile_after.contains(h)),
+            "profile generation was not replaced");
+        assert!(original_sections.iter().all(|h| !sections_after.contains(h)),
+            "section generation was not replaced");
+        assert!(host.doc.get_entity(before_axis).is_some(), "axis erased by regeneration");
+        assert!(find_surface_in_document(host.document(), "DWG_VIEW_REGEN_1").is_some(),
+            "TIN erased by regeneration");
+    }
+
+    #[test]
     fn tin_view_failed_insertion_keeps_old_profile_and_sections() {
         let mut host = TestHost::new();
         tagged_test_surface(&mut host, "REGEN_CAD_FAILURE");
