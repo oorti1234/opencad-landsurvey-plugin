@@ -1783,14 +1783,85 @@ fn selected_tin_axis(host: &dyn HostApi) -> Result<Vec<[f64; 2]>, String> {
     Ok(pl.vertices.iter().map(|v| [v.location.x, v.location.y]).collect())
 }
 
+/// Each generated view belongs to a specific source axis handle as well as
+/// a TIN name and view kind. An axis edit retains its handle across saves;
+/// another axis with the same surface name is kept separate. Older two-field
+/// tags are deliberately not retired, since their axis cannot be identified.
+fn tin_view_record(surface: &str, kind: &str, axis_key: &str) -> ExtendedDataRecord {
+    let mut rec = surface_record(surface, kind);
+    rec.add_value(XDataValue::String(axis_key.to_string()));
+    rec
+}
+
+/// Return only tagged views created for this (surface, selected axis, family).
+/// Group names are disjoint, so a profile regeneration cannot erase sections.
+fn tin_view_handles(
+    doc: &codec::CadDocument, surface: &str, axis_key: &str, profile: bool,
+) -> Vec<codec::Handle> {
+    doc.entities().filter_map(|ent| {
+        let record = ent.common().extended_data.get_record(XDATA_SURFACE)?;
+        let mut values = record.values.iter().filter_map(|v| match v {
+            XDataValue::String(s) => Some(s.as_str()),
+            _ => None,
+        });
+        let name = values.next()?;
+        let kind = values.next()?;
+        let axis = values.next()?;
+        let family = if profile {
+            matches!(kind, "PROFILE_VIEW" | "PROFILE_GRID" | "PROFILE_NOTE")
+        } else {
+            matches!(kind, "SECTION_VIEW" | "SECTION_GRID" | "SECTION_NOTE")
+        };
+        (family && name.eq_ignore_ascii_case(surface) && axis == axis_key)
+            .then_some(ent.common().handle)
+    }).collect()
+}
+
+/// Insert a fully built view before retiring the previous generation.
+/// Insertion failures leave previous views untouched. The host has no atomic
+/// delete transaction: any failure to remove an old entity is explicitly
+/// reported and remains recoverable with Undo.
+fn commit_tin_view_regeneration(
+    host: &mut dyn HostApi, batch: Batch, surface: &str,
+    axis_key: &str, profile: bool, command: &str,
+) -> Option<(usize, usize)> {
+    let old = tin_view_handles(host.document(), surface, axis_key, profile);
+    let expected = batch.len();
+    host.push_undo(&format!("{command} regenerate"));
+    let added = batch.commit_with_handles(host);
+    if added.len() != expected {
+        let removed = added.iter().filter(|&&h| host.remove_entity(h)).count();
+        if removed > 0 {
+            host.bump_geometry();
+            host.set_dirty();
+        }
+        host.push_error(&format!(
+            "{command}: incomplete insertion ({}/{}); rolled back {removed}/{} new entities; previous views retained.",
+            added.len(), expected, added.len()
+        ));
+        return None;
+    }
+    let retired = old.iter().filter(|&&h| host.remove_entity(h)).count();
+    host.bump_geometry();
+    host.set_dirty();
+    if retired != old.len() {
+        host.push_error(&format!(
+            "{command}: added {} entities, but removed only {retired}/{} previous views. Use Undo and inspect remaining duplicates.",
+            added.len(), old.len()
+        ));
+        return None;
+    }
+    Some((added.len(), retired))
+}
+
 /// Queue a continuous run of profile/section points on the target layer.
 /// Gaps in the TIN break the line, preventing invented terrain segments.
-fn queue_tin_view_run(batch: &mut Batch, pts: &mut Vec<Vector3>, surface: &str, kind: &str, layer: &str) {
+fn queue_tin_view_run(batch: &mut Batch, pts: &mut Vec<Vector3>, surface: &str, axis_key: &str, kind: &str, layer: &str) {
     if pts.len() >= 2 {
         batch.add_tagged(
             EntityType::Polyline3D(Polyline3D::from_points(std::mem::take(pts))),
             layer,
-            surface_record(surface, kind),
+            tin_view_record(surface, kind, axis_key),
         );
     } else {
         pts.clear();
@@ -1802,6 +1873,7 @@ fn queue_tin_view_run(batch: &mut Batch, pts: &mut Vec<Vector3>, surface: &str, 
 fn queue_tin_view_text(
     batch: &mut Batch,
     name: &str,
+    axis_key: &str,
     kind: &str,
     value: String,
     x: f64,
@@ -1812,14 +1884,14 @@ fn queue_tin_view_text(
         .with_height(height);
     batch.add_tagged(
         EntityType::Text(label), "LS-TIN-ANNOTATION",
-        surface_record(name, kind),
+        tin_view_record(name, kind, axis_key),
     );
 }
 
 /// A reference line in an elevation view, tagged so it can be identified
 /// separately from the terrain polyline.
 fn queue_tin_view_baseline(
-    batch: &mut Batch, name: &str, kind: &str,
+    batch: &mut Batch, name: &str, axis_key: &str, kind: &str,
     a: [f64; 2], b: [f64; 2],
 ) {
     batch.add_tagged(
@@ -1827,7 +1899,7 @@ fn queue_tin_view_baseline(
             Vector3::new(a[0], a[1], 0.0),
             Vector3::new(b[0], b[1], 0.0),
         )),
-        "LS-TIN-GRID", surface_record(name, kind),
+        "LS-TIN-GRID", tin_view_record(name, kind, axis_key),
     );
 }
 
@@ -1853,6 +1925,7 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
         Ok(v) => v,
         Err(e) => { host.push_error(&format!("LS_TINPROFILE: {e}")); return; }
     };
+    let axis_key = format!("{:?}", host.selection()[0]);
     let surface = match resolve_named_surface(host, args[0]) {
         Ok(v) => v,
         Err(e) => { host.push_error(&format!("LS_TINPROFILE: {e}")); return; }
@@ -1887,10 +1960,10 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
         if let Some(z) = p.elevation {
             run.push(Vector3::new(x0 + p.station - start, y0 + (z - datum)*scale, 0.0));
         } else {
-            queue_tin_view_run(&mut batch, &mut run, args[0], "PROFILE_VIEW", "LS-TIN-PROFILE");
+            queue_tin_view_run(&mut batch, &mut run, args[0], &axis_key, "PROFILE_VIEW", "LS-TIN-PROFILE");
         }
     }
-    queue_tin_view_run(&mut batch, &mut run, args[0], "PROFILE_VIEW", "LS-TIN-PROFILE");
+    queue_tin_view_run(&mut batch, &mut run, args[0], &axis_key, "PROFILE_VIEW", "LS-TIN-PROFILE");
     if batch.len() == 0 {
         host.push_info("LS_TINPROFILE: no drawable continuous terrain segments");
         return;
@@ -1899,28 +1972,23 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
     let end_station = profile.last().unwrap().station;
     let end_x = x0 + end_station - start;
     let text_h = ((maxx - minx).max(maxy - miny) / 100.0).clamp(0.5, 3.0);
-    queue_tin_view_baseline(&mut batch, args[0], "PROFILE_GRID",
+    queue_tin_view_baseline(&mut batch, args[0], &axis_key, "PROFILE_GRID",
         [x0, y0], [end_x, y0]);
-    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+    queue_tin_view_text(&mut batch, args[0], &axis_key, "PROFILE_NOTE",
         format!("GROUND PROFILE {}  V 10:1", args[0]),
         x0, y0 + (max_z - datum) * scale + 2.0 * text_h, text_h);
-    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+    queue_tin_view_text(&mut batch, args[0], &axis_key, "PROFILE_NOTE",
         format!("STA {:.3}   DATUM {:.3}", start, datum),
         x0, y0 - 2.0 * text_h, text_h);
-    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+    queue_tin_view_text(&mut batch, args[0], &axis_key, "PROFILE_NOTE",
         format!("STA {:.3}", end_station),
         end_x, y0 - 2.0 * text_h, text_h);
-    let expected = batch.len();
-    host.push_undo("LS_TINPROFILE draw");
-    let handles = batch.commit_with_handles(host);
-    if handles.len() != expected {
-        let removed = handles.iter().filter(|&&h| host.remove_entity(h)).count();
-        host.push_error(&format!("LS_TINPROFILE: incomplete draw; rolled back {removed}/{} entities", handles.len()));
-        return;
-    }
-    host.bump_geometry();
-    host.set_dirty();
-    host.push_output(&format!("LS_TINPROFILE: drew {terrain_count} terrain profile segment(s) with datum and station labels"));
+    let Some((count, retired)) = commit_tin_view_regeneration(
+        host, batch, args[0], &axis_key, true, "LS_TINPROFILE",
+    ) else { return };
+    host.push_output(&format!(
+        "LS_TINPROFILE: drew {terrain_count} terrain segment(s), {count} total entities, replaced {retired} earlier profile entities."
+    ));
 }
 
 /// Preview or draw cross-section terrain views at regularly spaced stations.
@@ -1947,6 +2015,7 @@ fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
         Ok(v) => v,
         Err(e) => { host.push_error(&format!("LS_TINSECTIONS: {e}")); return; }
     };
+    let axis_key = format!("{:?}", host.selection()[0]);
     let surface = match resolve_named_surface(host, args[0]) {
         Ok(v) => v,
         Err(e) => { host.push_error(&format!("LS_TINSECTIONS: {e}")); return; }
@@ -1993,16 +2062,16 @@ fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
             if let Some(z) = p.elevation {
                 run.push(Vector3::new(base_x + p.offset, base_y + (z - datum)*5.0, 0.0));
             } else {
-                queue_tin_view_run(&mut batch, &mut run, args[0], "SECTION_VIEW", "LS-TIN-SECTION");
+                queue_tin_view_run(&mut batch, &mut run, args[0], &axis_key, "SECTION_VIEW", "LS-TIN-SECTION");
             }
         }
-        queue_tin_view_run(&mut batch, &mut run, args[0], "SECTION_VIEW", "LS-TIN-SECTION");
-        queue_tin_view_baseline(&mut batch, args[0], "SECTION_GRID",
+        queue_tin_view_run(&mut batch, &mut run, args[0], &axis_key, "SECTION_VIEW", "LS-TIN-SECTION");
+        queue_tin_view_baseline(&mut batch, args[0], &axis_key, "SECTION_GRID",
             [base_x - vals[1], base_y], [base_x + vals[2], base_y]);
-        queue_tin_view_text(&mut batch, args[0], "SECTION_NOTE",
+        queue_tin_view_text(&mut batch, args[0], &axis_key, "SECTION_NOTE",
             format!("STA {:.3}  V 5:1", section.station),
             base_x - vals[1], base_y + (terrain_max - datum) * 5.0 + 2.0 * text_h, text_h);
-        queue_tin_view_text(&mut batch, args[0], "SECTION_NOTE",
+        queue_tin_view_text(&mut batch, args[0], &axis_key, "SECTION_NOTE",
             format!("L {:.2}  DATUM {:.2}  R {:.2}", vals[1], datum, vals[2]),
             base_x - vals[1], base_y - 2.0 * text_h, text_h);
         drawn += 1;
@@ -2011,17 +2080,12 @@ fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
         host.push_info("LS_TINSECTIONS: no drawable section terrain segments");
         return;
     }
-    let expected = batch.len();
-    host.push_undo("LS_TINSECTIONS draw");
-    let handles = batch.commit_with_handles(host);
-    if handles.len() != expected {
-        let removed = handles.iter().filter(|&&h| host.remove_entity(h)).count();
-        host.push_error(&format!("LS_TINSECTIONS: incomplete draw; rolled back {removed}/{} entities", handles.len()));
-        return;
-    }
-    host.bump_geometry();
-    host.set_dirty();
-    host.push_output(&format!("LS_TINSECTIONS: drew {} section(s), {} terrain polyline(s)", drawn, handles.len()));
+    let Some((count, retired)) = commit_tin_view_regeneration(
+        host, batch, args[0], &axis_key, false, "LS_TINSECTIONS",
+    ) else { return };
+    host.push_output(&format!(
+        "LS_TINSECTIONS: drew {drawn} section(s), {count} total entities, replaced {retired} earlier section entities."
+    ));
 }
 
 /// `LS_CONTOURS <surface> [minor-interval=0.5] [major-every=5]`.
