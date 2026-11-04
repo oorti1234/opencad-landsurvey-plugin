@@ -5294,12 +5294,12 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         };
         let mut mesh = EntityType::Mesh(mesh_from_surface(&flat));
-        tag(&mut mesh, "EG", "TIN");
+        tag(&mut mesh, "FLAT_REGEN_CLEAR", "TIN");
         host.doc.add_entity(mesh).expect("flat tagged TIN");
         let mut stale = EntityType::Polyline3D(Polyline3D::from_points(vec![
             Vector3::new(0., 0., 9.), Vector3::new(2., 0., 9.),
         ]));
-        tag(&mut stale, "EG", "CONTOUR");
+        tag(&mut stale, "FLAT_REGEN_CLEAR", "CONTOUR");
         host.doc.add_entity(stale).expect("stale contour");
         let mut foreign = EntityType::Polyline3D(Polyline3D::from_points(vec![
             Vector3::new(0., 1., 9.), Vector3::new(2., 1., 9.),
@@ -5307,9 +5307,9 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
         tag(&mut foreign, "FG", "CONTOUR");
         let foreign_handle = host.doc.add_entity(foreign).expect("foreign contour");
 
-        draw_contours(&mut host, "LS_CONTOURS EG 1 5");
+        draw_contours(&mut host, "LS_CONTOURS FLAT_REGEN_CLEAR 1 5");
 
-        assert!(contour_handles_for_surface(host.document(), "EG").is_empty());
+        assert!(contour_handles_for_surface(host.document(), "FLAT_REGEN_CLEAR").is_empty());
         assert_eq!(contour_handles_for_surface(host.document(), "FG"), vec![foreign_handle]);
         assert!(host.log.iter().any(|line| line.contains("removed 1 previous contours")),
             "missing regeneration report: {:?}", host.log);
@@ -5323,18 +5323,18 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
             triangles: vec![[0, 1, 2]],
         };
         let mut mesh = EntityType::Mesh(mesh_from_surface(&flat));
-        tag(&mut mesh, "EG", "TIN");
+        tag(&mut mesh, "FLAT_REGEN_BLOCKED", "TIN");
         host.doc.add_entity(mesh).expect("flat tagged TIN");
         let mut stale = EntityType::Polyline3D(Polyline3D::from_points(vec![
             Vector3::new(0., 0., 9.), Vector3::new(2., 0., 9.),
         ]));
-        tag(&mut stale, "EG", "CONTOUR");
+        tag(&mut stale, "FLAT_REGEN_BLOCKED", "CONTOUR");
         let stale_handle = host.doc.add_entity(stale).expect("stale contour");
         host.blocked_remove = Some(stale_handle);
 
-        draw_contours(&mut host, "LS_CONTOURS EG 1 5");
+        draw_contours(&mut host, "LS_CONTOURS FLAT_REGEN_BLOCKED 1 5");
 
-        assert_eq!(contour_handles_for_surface(host.document(), "EG"), vec![stale_handle]);
+        assert_eq!(contour_handles_for_surface(host.document(), "FLAT_REGEN_BLOCKED"), vec![stale_handle]);
         assert!(host.log.iter().any(|line|
             line.contains("removed only 0/1") && line.contains("remaining stale contours")),
             "missing failed-removal report: {:?}", host.log);
