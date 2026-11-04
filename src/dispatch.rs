@@ -99,7 +99,7 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
                  LS_AUTOLABEL, LS_POINTLABEL. \
                  Field-to-finish: LS_FINISH (lines, symbols), LS_LIBRARY. \
                  Import / export: LS_IMPORTPLAN, LS_LANDXML, LS_LANDXMLOUT. \
-                 Surfaces: LS_SURFACE, LS_VOLUME, LS_DATUM, LS_CONTOURS. \
+                 Surfaces: LS_SURFACE, LS_VOLUME, LS_DATUM, LS_CONTOURS, LS_TINPROFILE, LS_TINSECTIONS. \
                  COGO / transforms: LS_INVERSE, LS_RTS, LS_HELMERT, LS_RESECT. \
                  Labels: LS_LABELSTYLE. \
                  See PLUGIN.md for usage.",
@@ -155,6 +155,14 @@ fn dispatch_verb(host: &mut dyn HostApi, verb: &str, cmd: &str) -> bool {
         }
         "LS_CONTOURS" => {
             draw_contours(host, cmd);
+            true
+        }
+        "LS_TINPROFILE" => {
+            draw_tin_profile(host, cmd);
+            true
+        }
+        "LS_TINSECTIONS" => {
+            draw_tin_sections(host, cmd);
             true
         }
         "LS_DATUM" => {
@@ -1751,6 +1759,205 @@ fn surface_from_mesh(mesh: &Mesh) -> Surface {
     Surface { nodes, triangles }
 }
 
+
+/// Extract a straight-segment plan axis from exactly one selected LWPolyline.
+/// Bulged arc segments are rejected rather than silently approximated as chords.
+fn selected_tin_axis(host: &dyn HostApi) -> Result<Vec<[f64; 2]>, String> {
+    let handles = host.selection();
+    if handles.len() != 1 {
+        return Err("select exactly one open 2D LWPolyline as the axis".into());
+    }
+    let ent = host.document().get_entity(handles[0])
+        .ok_or("selected axis entity is unavailable")?;
+    let EntityType::LwPolyline(pl) = ent else {
+        return Err("axis must be a 2D LWPolyline".into());
+    };
+    if pl.is_closed {
+        return Err("closed axis polylines are not supported".into());
+    }
+    if pl.vertices.len() < 2
+        || pl.vertices.iter().any(|v| v.bulge.abs() > 1e-12)
+    {
+        return Err("axis needs at least two vertices and cannot contain arc bulges".into());
+    }
+    Ok(pl.vertices.iter().map(|v| [v.location.x, v.location.y]).collect())
+}
+
+/// Queue a continuous run of profile/section points on the target layer.
+/// Gaps in the TIN break the line, preventing invented terrain segments.
+fn queue_tin_view_run(batch: &mut Batch, pts: &mut Vec<Vector3>, surface: &str, kind: &str, layer: &str) {
+    if pts.len() >= 2 {
+        batch.add_tagged(
+            EntityType::Polyline3D(Polyline3D::from_points(std::mem::take(pts))),
+            layer,
+            surface_record(surface, kind),
+        );
+    } else {
+        pts.clear();
+    }
+}
+
+/// Preview or draw a longitudinal profile along one selected 2D polyline.
+///
+/// Usage: LS_TINPROFILE <surface> [start-station=0] [preview]
+/// The profile is drawn outside the southwest of the TIN in XY drawing space;
+/// X = station relative to the start; Y = elevation above a local datum,
+/// with 10x vertical exaggeration. Stored as tagged 3D polylines (Z=0).
+fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
+    let words: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    let preview = words.iter().any(|w| w.eq_ignore_ascii_case("preview"));
+    let args: Vec<&str> = words.into_iter().filter(|w| !w.eq_ignore_ascii_case("preview")).collect();
+    if args.is_empty() || args.len() > 2 {
+        host.push_info("Usage: LS_TINPROFILE <surface> [start-station=0] [preview]; select one open 2D LWPolyline axis");
+        return;
+    }
+    let start = match args.get(1).unwrap_or(&"0").parse::<f64>() {
+        Ok(v) if v.is_finite() => v,
+        _ => { host.push_error("LS_TINPROFILE: invalid start station"); return; }
+    };
+    let axis = match selected_tin_axis(host) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINPROFILE: {e}")); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINPROFILE: {e}")); return; }
+    };
+    let profile = match landsurvey::ground_profile::trace_ground_profile(&surface, &axis, start) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINPROFILE: terrain tracing failed: {e:?}")); return; }
+    };
+    let valid: Vec<_> = profile.iter().filter(|p| p.elevation.is_some()).collect();
+    if valid.is_empty() {
+        host.push_info("LS_TINPROFILE: axis does not intersect the TIN");
+        return;
+    }
+    let min_z = valid.iter().map(|p| p.elevation.unwrap()).fold(f64::INFINITY, f64::min);
+    let datum = min_z.floor();
+    let (minx, maxx, miny, maxy) = surface.extent();
+    let scale = 10.0;
+    let x0 = minx;
+    let y0 = miny - (maxy - miny).max(maxx - minx).max(1.0) - 20.0;
+    host.push_output(&format!(
+        "LS_TINPROFILE: {} samples ({} on TIN), station {:.3} to {:.3}; datum {:.3}; vertical exaggeration 10x{}",
+        profile.len(), valid.len(), profile.first().unwrap().station,
+        profile.last().unwrap().station, datum, if preview { " (preview: drawing unchanged)" } else { "" },
+    ));
+    if preview { return; }
+    let mut batch = Batch::new();
+    let mut run = Vec::new();
+    for p in &profile {
+        if let Some(z) = p.elevation {
+            run.push(Vector3::new(x0 + p.station - start, y0 + (z - datum)*scale, 0.0));
+        } else {
+            queue_tin_view_run(&mut batch, &mut run, args[0], "PROFILE_VIEW", "LS-TIN-PROFILE");
+        }
+    }
+    queue_tin_view_run(&mut batch, &mut run, args[0], "PROFILE_VIEW", "LS-TIN-PROFILE");
+    if batch.len() == 0 {
+        host.push_info("LS_TINPROFILE: no drawable continuous terrain segments");
+        return;
+    }
+    let expected = batch.len();
+    host.push_undo("LS_TINPROFILE draw");
+    let handles = batch.commit_with_handles(host);
+    if handles.len() != expected {
+        let removed = handles.iter().filter(|&&h| host.remove_entity(h)).count();
+        host.push_error(&format!("LS_TINPROFILE: incomplete draw; rolled back {removed}/{} entities", handles.len()));
+        return;
+    }
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!("LS_TINPROFILE: drew {} terrain profile segment(s)", handles.len()));
+}
+
+/// Preview or draw cross-section terrain views at regularly spaced stations.
+/// Usage: LS_TINSECTIONS <surface> <interval> <left> <right> [start-station=0] [preview].
+/// The output is arranged to the east of the TIN as separate offset/elevation
+/// diagrams. Each section uses its own local vertical datum (5x exaggeration).
+fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
+    let words: Vec<&str> = cmd.split_whitespace().skip(1).collect();
+    let preview = words.iter().any(|w| w.eq_ignore_ascii_case("preview"));
+    let args: Vec<&str> = words.into_iter().filter(|w| !w.eq_ignore_ascii_case("preview")).collect();
+    if args.len() < 4 || args.len() > 5 {
+        host.push_info("Usage: LS_TINSECTIONS <surface> <interval> <left> <right> [start-station=0] [preview]; select one open 2D LWPolyline");
+        return;
+    }
+    let mut vals = Vec::new();
+    for word in &args[1..] {
+        match word.parse::<f64>() {
+            Ok(v) if v.is_finite() => vals.push(v),
+            _ => { host.push_error("LS_TINSECTIONS: all distances and station must be finite"); return; }
+        }
+    }
+    let start = *vals.get(3).unwrap_or(&0.0);
+    let axis = match selected_tin_axis(host) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINSECTIONS: {e}")); return; }
+    };
+    let surface = match resolve_named_surface(host, args[0]) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINSECTIONS: {e}")); return; }
+    };
+    let sections = match landsurvey::cross_sections::trace_tin_cross_sections(
+        &surface, &axis, start, vals[0], vals[1], vals[2],
+    ) {
+        Ok(v) => v,
+        Err(e) => { host.push_error(&format!("LS_TINSECTIONS: terrain tracing failed: {e:?}")); return; }
+    };
+    if sections.len() > 128 {
+        host.push_error("LS_TINSECTIONS: more than 128 sections; increase the interval or use multiple axes");
+        return;
+    }
+    host.push_output(&format!(
+        "LS_TINSECTIONS: {} stations from {:.3} to {:.3}{}",
+        sections.len(), sections.first().unwrap().station,
+        sections.last().unwrap().station,
+        if preview { " (preview: drawing unchanged)" } else { "" },
+    ));
+    if preview { return; }
+    let (minx, maxx, miny, maxy) = surface.extent();
+    let _ = minx;
+    let spread = (vals[1] + vals[2] + 20.0).max(1.0);
+    let origin_x = maxx + spread + 20.0;
+    let origin_y = miny;
+    let mut batch = Batch::new();
+    let mut drawn = 0usize;
+    for (i, section) in sections.iter().enumerate() {
+        let base_x = origin_x + (i % 4) as f64 * spread;
+        let base_y = origin_y - (i / 4) as f64 * ((maxy - miny).max(20.0) + 20.0);
+        let min_z = section.points.iter()
+            .filter_map(|p| p.elevation)
+            .fold(f64::INFINITY, f64::min);
+        if !min_z.is_finite() { continue; }
+        let datum = min_z.floor();
+        let mut run = Vec::new();
+        for p in &section.points {
+            if let Some(z) = p.elevation {
+                run.push(Vector3::new(base_x + p.offset, base_y + (z - datum)*5.0, 0.0));
+            } else {
+                queue_tin_view_run(&mut batch, &mut run, args[0], "SECTION_VIEW", "LS-TIN-SECTION");
+            }
+        }
+        queue_tin_view_run(&mut batch, &mut run, args[0], "SECTION_VIEW", "LS-TIN-SECTION");
+        drawn += 1;
+    }
+    if batch.len() == 0 {
+        host.push_info("LS_TINSECTIONS: no drawable section terrain segments");
+        return;
+    }
+    let expected = batch.len();
+    host.push_undo("LS_TINSECTIONS draw");
+    let handles = batch.commit_with_handles(host);
+    if handles.len() != expected {
+        let removed = handles.iter().filter(|&&h| host.remove_entity(h)).count();
+        host.push_error(&format!("LS_TINSECTIONS: incomplete draw; rolled back {removed}/{} entities", handles.len()));
+        return;
+    }
+    host.bump_geometry();
+    host.set_dirty();
+    host.push_output(&format!("LS_TINSECTIONS: drew {} section(s), {} terrain polyline(s)", drawn, handles.len()));
+}
 
 /// `LS_CONTOURS <surface> [minor-interval=0.5] [major-every=5]`.
 /// Draw continuous, tagged 3-D contour polylines from the named TIN.
