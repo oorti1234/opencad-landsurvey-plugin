@@ -10,6 +10,7 @@ pub mod cogo;
 pub mod contours;
 pub mod dxf;
 pub mod finish;
+pub mod ground_profile;
 pub mod label_style;
 pub mod landxml;
 pub mod library;
