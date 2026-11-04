@@ -1797,6 +1797,40 @@ fn queue_tin_view_run(batch: &mut Batch, pts: &mut Vec<Vector3>, surface: &str, 
     }
 }
 
+/// A labelled annotation belonging to a generated TIN view. Kept in
+/// the same atomic insertion batch as its profile/section geometry.
+fn queue_tin_view_text(
+    batch: &mut Batch,
+    name: &str,
+    kind: &str,
+    value: String,
+    x: f64,
+    y: f64,
+    height: f64,
+) {
+    let label = Text::with_value(value, Vector3::new(x, y, 0.0))
+        .with_height(height);
+    batch.add_tagged(
+        EntityType::Text(label), "LS-TIN-ANNOTATION",
+        surface_record(name, kind),
+    );
+}
+
+/// A reference line in an elevation view, tagged so it can be identified
+/// separately from the terrain polyline.
+fn queue_tin_view_baseline(
+    batch: &mut Batch, name: &str, kind: &str,
+    a: [f64; 2], b: [f64; 2],
+) {
+    batch.add_tagged(
+        EntityType::Line(Line::from_points(
+            Vector3::new(a[0], a[1], 0.0),
+            Vector3::new(b[0], b[1], 0.0),
+        )),
+        "LS-TIN-GRID", surface_record(name, kind),
+    );
+}
+
 /// Preview or draw a longitudinal profile along one selected 2D polyline.
 ///
 /// Usage: LS_TINPROFILE <surface> [start-station=0] [preview]
@@ -1833,11 +1867,14 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
         return;
     }
     let min_z = valid.iter().map(|p| p.elevation.unwrap()).fold(f64::INFINITY, f64::min);
+    let max_z = valid.iter().map(|p| p.elevation.unwrap()).fold(f64::NEG_INFINITY, f64::max);
     let datum = min_z.floor();
     let (minx, maxx, miny, maxy) = surface.extent();
     let scale = 10.0;
     let x0 = minx;
-    let y0 = miny - (maxy - miny).max(maxx - minx).max(1.0) - 20.0;
+    // Leave room for the full vertically exaggerated profile above its datum.
+    let y0 = miny - ((max_z - datum) * scale)
+        .max((maxy - miny).max(maxx - minx).max(1.0)) - 25.0;
     host.push_output(&format!(
         "LS_TINPROFILE: {} samples ({} on TIN), station {:.3} to {:.3}; datum {:.3}; vertical exaggeration 10x{}",
         profile.len(), valid.len(), profile.first().unwrap().station,
@@ -1858,6 +1895,21 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
         host.push_info("LS_TINPROFILE: no drawable continuous terrain segments");
         return;
     }
+    let terrain_count = batch.len();
+    let end_station = profile.last().unwrap().station;
+    let end_x = x0 + end_station - start;
+    let text_h = ((maxx - minx).max(maxy - miny) / 100.0).clamp(0.5, 3.0);
+    queue_tin_view_baseline(&mut batch, args[0], "PROFILE_GRID",
+        [x0, y0], [end_x, y0]);
+    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+        format!("GROUND PROFILE {}  V 10:1", args[0]),
+        x0, y0 + (max_z - datum) * scale + 2.0 * text_h, text_h);
+    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+        format!("STA {:.3}   DATUM {:.3}", start, datum),
+        x0, y0 - 2.0 * text_h, text_h);
+    queue_tin_view_text(&mut batch, args[0], "PROFILE_NOTE",
+        format!("STA {:.3}", end_station),
+        end_x, y0 - 2.0 * text_h, text_h);
     let expected = batch.len();
     host.push_undo("LS_TINPROFILE draw");
     let handles = batch.commit_with_handles(host);
@@ -1868,7 +1920,7 @@ fn draw_tin_profile(host: &mut dyn HostApi, cmd: &str) {
     }
     host.bump_geometry();
     host.set_dirty();
-    host.push_output(&format!("LS_TINPROFILE: drew {} terrain profile segment(s)", handles.len()));
+    host.push_output(&format!("LS_TINPROFILE: drew {terrain_count} terrain profile segment(s) with datum and station labels"));
 }
 
 /// Preview or draw cross-section terrain views at regularly spaced stations.
@@ -1918,14 +1970,19 @@ fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
     if preview { return; }
     let (minx, maxx, miny, maxy) = surface.extent();
     let _ = minx;
-    let spread = (vals[1] + vals[2] + 20.0).max(1.0);
+    let terrain_min = surface.nodes.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+    let terrain_max = surface.nodes.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+    let vertical_span = (terrain_max - terrain_min).max(0.0) * 5.0;
+    let text_h = ((maxx - minx).max(maxy - miny) / 100.0).clamp(0.5, 3.0);
+    let spread = (vals[1] + vals[2] + 12.0 * text_h).max(1.0);
+    let row_stride = vertical_span + 12.0 * text_h + 15.0;
     let origin_x = maxx + spread + 20.0;
     let origin_y = miny;
     let mut batch = Batch::new();
     let mut drawn = 0usize;
     for (i, section) in sections.iter().enumerate() {
         let base_x = origin_x + (i % 4) as f64 * spread;
-        let base_y = origin_y - (i / 4) as f64 * ((maxy - miny).max(20.0) + 20.0);
+        let base_y = origin_y - (i / 4) as f64 * row_stride;
         let min_z = section.points.iter()
             .filter_map(|p| p.elevation)
             .fold(f64::INFINITY, f64::min);
@@ -1940,6 +1997,14 @@ fn draw_tin_sections(host: &mut dyn HostApi, cmd: &str) {
             }
         }
         queue_tin_view_run(&mut batch, &mut run, args[0], "SECTION_VIEW", "LS-TIN-SECTION");
+        queue_tin_view_baseline(&mut batch, args[0], "SECTION_GRID",
+            [base_x - vals[1], base_y], [base_x + vals[2], base_y]);
+        queue_tin_view_text(&mut batch, args[0], "SECTION_NOTE",
+            format!("STA {:.3}  V 5:1", section.station),
+            base_x - vals[1], base_y + (terrain_max - datum) * 5.0 + 2.0 * text_h, text_h);
+        queue_tin_view_text(&mut batch, args[0], "SECTION_NOTE",
+            format!("L {:.2}  DATUM {:.2}  R {:.2}", vals[1], datum, vals[2]),
+            base_x - vals[1], base_y - 2.0 * text_h, text_h);
         drawn += 1;
     }
     if batch.len() == 0 {
@@ -5504,6 +5569,25 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
         assert!(host.doc.entities().any(|e|
             matches!(surface_tag(e), Some(("CAD_SECTION_1", "TIN")))
         ));
+    }
+
+    #[test]
+    fn tin_views_create_tagged_labels_and_reference_lines() {
+        let mut host = TestHost::new();
+        selected_test_axis(&mut host);
+        tagged_test_surface(&mut host, "CAD_VIEW_LABELS_1");
+        draw_tin_profile(&mut host, "LS_TINPROFILE CAD_VIEW_LABELS_1 1000");
+        assert!(host.doc.entities().any(|e| matches!(e, EntityType::Text(t)
+            if t.value.contains("GROUND PROFILE CAD_VIEW_LABELS_1"))
+            && matches!(surface_tag(e), Some(("CAD_VIEW_LABELS_1", "PROFILE_NOTE")))));
+        assert!(host.doc.entities().any(|e|
+            matches!(surface_tag(e), Some(("CAD_VIEW_LABELS_1", "PROFILE_GRID")))));
+        draw_tin_sections(&mut host, "LS_TINSECTIONS CAD_VIEW_LABELS_1 4 2 2");
+        assert!(host.doc.entities().any(|e| matches!(e, EntityType::Text(t)
+            if t.value.contains("STA 4.000"))
+            && matches!(surface_tag(e), Some(("CAD_VIEW_LABELS_1", "SECTION_NOTE")))));
+        assert!(host.doc.entities().any(|e|
+            matches!(surface_tag(e), Some(("CAD_VIEW_LABELS_1", "SECTION_GRID")))));
     }
 
     #[test]
