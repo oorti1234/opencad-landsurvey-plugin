@@ -5450,6 +5450,72 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
 
+    fn selected_test_axis(host: &mut TestHost) {
+        let mut axis = LwPolyline::new();
+        axis.add_point_with_bulge(Vector2::new(1., 2.), 0.);
+        axis.add_point_with_bulge(Vector2::new(9., 2.), 0.);
+        let handle = host.doc.add_entity(EntityType::LwPolyline(axis)).unwrap();
+        host.selected = vec![handle];
+    }
+
+    fn tagged_test_surface(host: &mut TestHost, name: &str) {
+        let surface = Surface {
+            nodes: vec![
+                [0., 0., 100.], [10., 0., 110.],
+                [0., 10., 120.], [10., 10., 130.],
+            ],
+            triangles: vec![[0, 1, 2], [1, 3, 2]],
+        };
+        let mut ent = EntityType::Mesh(mesh_from_surface(&surface));
+        tag(&mut ent, name, "TIN");
+        host.doc.add_entity(ent).unwrap();
+    }
+
+    #[test]
+    fn tin_profile_preview_and_drawing_keep_original_axis() {
+        let mut host = TestHost::new();
+        selected_test_axis(&mut host);
+        tagged_test_surface(&mut host, "CAD_PROFILE_1");
+        let before = host.doc.entities().count();
+        draw_tin_profile(&mut host, "LS_TINPROFILE CAD_PROFILE_1 1000 preview");
+        assert_eq!(host.doc.entities().count(), before, "preview changed drawing");
+        draw_tin_profile(&mut host, "LS_TINPROFILE CAD_PROFILE_1 1000");
+        let drawn: Vec<_> = host.doc.entities().filter(|e|
+            matches!(surface_tag(e), Some(("CAD_PROFILE_1", "PROFILE_VIEW")))
+        ).collect();
+        assert!(!drawn.is_empty(), "profile was not drawn: {:?}", host.log);
+        assert!(drawn.iter().all(|e| e.common().layer == "LS-TIN-PROFILE"));
+        assert!(host.doc.entities().any(|e| matches!(e, EntityType::LwPolyline(_))));
+    }
+
+    #[test]
+    fn tin_sections_preview_and_drawing_preserve_tin() {
+        let mut host = TestHost::new();
+        selected_test_axis(&mut host);
+        tagged_test_surface(&mut host, "CAD_SECTION_1");
+        let before = host.doc.entities().count();
+        draw_tin_sections(&mut host, "LS_TINSECTIONS CAD_SECTION_1 4 2 2 0 preview");
+        assert_eq!(host.doc.entities().count(), before);
+        draw_tin_sections(&mut host, "LS_TINSECTIONS CAD_SECTION_1 4 2 2 0");
+        let n = host.doc.entities().filter(|e|
+            matches!(surface_tag(e), Some(("CAD_SECTION_1", "SECTION_VIEW")))
+        ).count();
+        assert!(n >= 3, "expected 3 sections, log: {:?}", host.log);
+        assert!(host.doc.entities().any(|e|
+            matches!(surface_tag(e), Some(("CAD_SECTION_1", "TIN")))
+        ));
+    }
+
+    #[test]
+    fn tin_profile_rejects_missing_or_arc_axis_without_writing() {
+        let mut host = TestHost::new();
+        tagged_test_surface(&mut host, "CAD_PROFILE_BAD_AXIS");
+        let before = host.doc.entities().count();
+        draw_tin_profile(&mut host, "LS_TINPROFILE CAD_PROFILE_BAD_AXIS");
+        assert_eq!(host.doc.entities().count(), before);
+        assert!(host.log.iter().any(|l| l.contains("select exactly one")));
+    }
+
     #[test]
     fn contour_replacement_targets_only_own_surface() {
         let mut doc = CadDocument::default();
