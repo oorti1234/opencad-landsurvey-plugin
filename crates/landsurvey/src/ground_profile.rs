@@ -135,6 +135,133 @@ pub fn sample_ground_profile(
     Ok(samples)
 }
 
+/// Trace a longitudinal ground profile at every intersection with a TIN edge.
+///
+/// Unlike fixed-step sampling, this preserves the exact slope breaks of the
+/// piecewise-planar TIN along each straight segment of the supplied axis.
+/// Interior TIN edges and boundary edges are considered. Where the axis runs
+/// outside the surface footprint, a sample with `elevation: None` separates
+/// drawable spans. Collinear boundary overlaps are handled by including the
+/// projected edge endpoints. The output includes the axis start/end and
+/// corners. No CAD entities are created.
+///
+/// This is intended for valid, non-overlapping TIN triangles. Geometry at
+/// ambiguous coincident or overlapping triangles is resolved by the existing
+/// Surface::interpolate_z() policy.
+pub fn trace_ground_profile(
+    surface: &Surface,
+    axis: &[[f64; 2]],
+    start_station: f64,
+) -> Result<Vec<GroundProfileSample>, ProfileSampleError> {
+    if !start_station.is_finite() {
+        return Err(ProfileSampleError::InvalidStartStation);
+    }
+    if axis.len() < 2 || axis.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(ProfileSampleError::InvalidAxis);
+    }
+    if surface.nodes.is_empty() || surface.triangles.is_empty()
+        || surface.nodes.iter().flatten().any(|v| !v.is_finite())
+        || surface.triangles.iter().flatten().any(|&i| i >= surface.nodes.len())
+    {
+        return Err(ProfileSampleError::InvalidSurface);
+    }
+
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    let mut result = Vec::new();
+    let mut traveled = 0.0;
+    let mut any_segment = false;
+    for segment in axis.windows(2) {
+        let p = segment[0];
+        let r = [segment[1][0] - p[0], segment[1][1] - p[1]];
+        let len = r[0].hypot(r[1]);
+        if !len.is_finite() {
+            return Err(ProfileSampleError::InvalidAxis);
+        }
+        if len == 0.0 {
+            continue;
+        }
+        any_segment = true;
+        // Parameter space is local to the axis segment, [0, 1].
+        let mut ts = vec![0.0f64, 1.0];
+        for &tri in &surface.triangles {
+            for (ia, ib) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                let a = surface.nodes[ia];
+                let b = surface.nodes[ib];
+                let q = [a[0], a[1]];
+                let edge = [b[0] - q[0], b[1] - q[1]];
+                let qp = [q[0] - p[0], q[1] - p[1]];
+                let den = cross(r, edge);
+                // Scale the cross-product tolerance to the local dimensions.
+                let tol = 1e-12 * len * edge[0].hypot(edge[1]);
+                if den.abs() > tol {
+                    let t = cross(qp, edge) / den;
+                    let u = cross(qp, r) / den;
+                    if (-1e-10..=1.0 + 1e-10).contains(&t)
+                        && (-1e-10..=1.0 + 1e-10).contains(&u)
+                    {
+                        ts.push(t.clamp(0.0, 1.0));
+                    }
+                } else if cross(qp, r).abs() <= 1e-12 * len * qp[0].hypot(qp[1]).max(1.0) {
+                    // Collinear axis/edge: include both edge endpoints.
+                    let rr = r[0] * r[0] + r[1] * r[1];
+                    let t0 = (qp[0] * r[0] + qp[1] * r[1]) / rr;
+                    let qb = [b[0] - p[0], b[1] - p[1]];
+                    let t1 = (qb[0] * r[0] + qb[1] * r[1]) / rr;
+                    for t in [t0, t1] {
+                        if (-1e-10..=1.0 + 1e-10).contains(&t) {
+                            ts.push(t.clamp(0.0, 1.0));
+                        }
+                    }
+                }
+            }
+        }
+        ts.sort_by(|a, b| a.total_cmp(b));
+        ts.dedup_by(|a, b| (*a - *b).abs() <= 1e-10);
+        // Count both station breakpoints and possible gap markers.
+        if result.len().saturating_add(ts.len().saturating_mul(2)) > MAX_SAMPLES {
+            return Err(ProfileSampleError::TooManySamples);
+        }
+        let point_at = |t: f64| [p[0] + t * r[0], p[1] + t * r[1]];
+        for (i, &t) in ts.iter().enumerate() {
+            if !result.is_empty() && i == 0 {
+                continue; // axis corner already in the output
+            }
+            if i > 0 {
+                let prev = ts[i - 1];
+                let mid = (prev + t) * 0.5;
+                let m = point_at(mid);
+                if surface.interpolate_z(m[0], m[1]).is_none() {
+                    result.push(GroundProfileSample {
+                        station: start_station + traveled + mid * len,
+                        east: m[0],
+                        north: m[1],
+                        elevation: None,
+                    });
+                }
+            }
+            let xy = point_at(t);
+            let station = start_station + traveled + t * len;
+            if !station.is_finite() {
+                return Err(ProfileSampleError::InvalidAxis);
+            }
+            result.push(GroundProfileSample {
+                station,
+                east: xy[0],
+                north: xy[1],
+                elevation: surface.interpolate_z(xy[0], xy[1]),
+            });
+        }
+        traveled += len;
+        if !traveled.is_finite() {
+            return Err(ProfileSampleError::InvalidAxis);
+        }
+    }
+    if !any_segment {
+        return Err(ProfileSampleError::InvalidAxis);
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +275,57 @@ mod tests {
             ],
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         }
+    }
+
+    #[test]
+    fn exact_trace_keeps_tin_edge_grade_break() {
+        // Two adjacent facets with a sharp change in longitudinal slope at E=5.
+        let tin = Surface {
+            nodes: vec![
+                [0., 0., 100.], [5., 0., 105.], [10., 0., 100.],
+                [0., 10., 100.], [5., 10., 105.], [10., 10., 100.],
+            ],
+            triangles: vec![[0, 1, 3], [1, 4, 3], [1, 2, 4], [2, 5, 4]],
+        };
+        let p = trace_ground_profile(&tin, &[[0., 5.], [10., 5.]], 1000.).unwrap();
+        assert!(p.iter().any(|x|
+            (x.station - 1005.).abs() < 1e-9
+            && (x.elevation.unwrap() - 105.).abs() < 1e-9
+        ), "TIN break at station 1+005 absent: {p:?}");
+        assert_eq!(p.first().unwrap().elevation, Some(100.));
+        assert_eq!(p.last().unwrap().elevation, Some(100.));
+    }
+
+    #[test]
+    fn exact_trace_marks_outside_gaps() {
+        let p = trace_ground_profile(
+            &plane(), &[[-5., 5.], [15., 5.]], 0.,
+        ).unwrap();
+        assert_eq!(p.first().unwrap().elevation, None);
+        assert_eq!(p.last().unwrap().elevation, None);
+        assert!(p.iter().any(|x| x.elevation.is_some()));
+        assert!(p.iter().any(|x| x.elevation.is_none() && x.station > 0. && x.station < 5.));
+        assert!(p.iter().any(|x| x.elevation.is_none() && x.station > 15. && x.station < 20.));
+    }
+
+    #[test]
+    fn exact_trace_keeps_polyline_corners_and_stations() {
+        let p = trace_ground_profile(
+            &plane(), &[[1., 1.], [4., 1.], [4., 4.]], 50.,
+        ).unwrap();
+        assert!(p.iter().any(|x| (x.station - 53.).abs() < 1e-10
+            && (x.east - 4.).abs() < 1e-10 && (x.north - 1.).abs() < 1e-10));
+        assert!((p.last().unwrap().station - 56.).abs() < 1e-10);
+    }
+
+    #[test]
+    fn exact_trace_rejects_bad_axis_and_tin() {
+        assert_eq!(trace_ground_profile(&plane(), &[[1., 1.]], 0.),
+                   Err(ProfileSampleError::InvalidAxis));
+        assert_eq!(trace_ground_profile(&plane(), &[[1., 1.], [1., 1.]], 0.),
+                   Err(ProfileSampleError::InvalidAxis));
+        assert_eq!(trace_ground_profile(&plane(), &[[1., 1.], [2., 1.]], f64::NAN),
+                   Err(ProfileSampleError::InvalidStartStation));
     }
 
     #[test]
