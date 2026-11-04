@@ -5655,6 +5655,73 @@ SS,OP33,FP27,AR0.00000,ZE93.43130,SD45.3524,--CHK 27
     }
 
     #[test]
+    fn tin_view_rerun_replaces_only_same_axis_and_kind() {
+        let mut host = TestHost::new();
+        tagged_test_surface(&mut host, "REGEN_CAD_ISOLATED");
+        selected_test_axis(&mut host);
+        let key1 = format!("{:?}", host.selected[0]);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_ISOLATED");
+        let first = tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key1, true);
+        assert!(!first.is_empty());
+        draw_tin_sections(&mut host, "LS_TINSECTIONS REGEN_CAD_ISOLATED 4 2 2");
+        let sections = tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key1, false);
+        assert!(!sections.is_empty());
+
+        selected_test_axis(&mut host);
+        let key2 = format!("{:?}", host.selected[0]);
+        assert_ne!(key1, key2);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_ISOLATED");
+        let other = tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key2, true);
+        assert!(!other.is_empty());
+
+        host.selected = vec![host.doc.entities()
+            .find(|e| format!("{:?}", e.common().handle) == key1)
+            .unwrap().common().handle];
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_ISOLATED");
+        let replaced = tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key1, true);
+        assert_eq!(replaced.len(), first.len());
+        assert!(first.iter().all(|h| !replaced.contains(h)));
+        assert_eq!(tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key1, false), sections);
+        assert_eq!(tin_view_handles(host.document(), "REGEN_CAD_ISOLATED", &key2, true), other);
+    }
+
+    #[test]
+    fn tin_view_failed_insertion_keeps_old_profile_and_sections() {
+        let mut host = TestHost::new();
+        tagged_test_surface(&mut host, "REGEN_CAD_FAILURE");
+        selected_test_axis(&mut host);
+        let key = format!("{:?}", host.selected[0]);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_FAILURE");
+        draw_tin_sections(&mut host, "LS_TINSECTIONS REGEN_CAD_FAILURE 4 2 2");
+        let profile = tin_view_handles(host.document(), "REGEN_CAD_FAILURE", &key, true);
+        let sections = tin_view_handles(host.document(), "REGEN_CAD_FAILURE", &key, false);
+        assert!(!profile.is_empty() && !sections.is_empty());
+        host.bulk_limit = Some(host.bulk_adds);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_FAILURE");
+        draw_tin_sections(&mut host, "LS_TINSECTIONS REGEN_CAD_FAILURE 4 2 2");
+        assert_eq!(tin_view_handles(host.document(), "REGEN_CAD_FAILURE", &key, true), profile);
+        assert_eq!(tin_view_handles(host.document(), "REGEN_CAD_FAILURE", &key, false), sections);
+        assert!(host.log.iter().any(|line|
+            line.contains("incomplete insertion") && line.contains("previous views retained")));
+    }
+
+    #[test]
+    fn tin_view_failed_retirement_is_reported() {
+        let mut host = TestHost::new();
+        tagged_test_surface(&mut host, "REGEN_CAD_BLOCKED");
+        selected_test_axis(&mut host);
+        let key = format!("{:?}", host.selected[0]);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_BLOCKED");
+        let old = tin_view_handles(host.document(), "REGEN_CAD_BLOCKED", &key, true);
+        assert!(!old.is_empty());
+        host.blocked_remove = Some(old[0]);
+        draw_tin_profile(&mut host, "LS_TINPROFILE REGEN_CAD_BLOCKED");
+        assert!(host.doc.get_entity(old[0]).is_some());
+        assert!(host.log.iter().any(|line|
+            line.contains("removed only") && line.contains("Use Undo")));
+    }
+
+    #[test]
     fn tin_profile_rejects_missing_or_arc_axis_without_writing() {
         let mut host = TestHost::new();
         tagged_test_surface(&mut host, "CAD_PROFILE_BAD_AXIS");
